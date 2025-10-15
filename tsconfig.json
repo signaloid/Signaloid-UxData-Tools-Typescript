@@ -1,0 +1,53 @@
+/* To learn more about this file: https://aka.ms/tsconfig */
+{
+	"include": [
+		"src/**/*"
+	],
+	"exclude": [
+		"node_modules",
+		"dist",
+		"tests",
+		"test-vite-frontend"
+	],
+	"compilerOptions": {
+		// File Layout
+		"rootDir": "./src",
+		"outDir": "./dist/cjs",
+		"esModuleInterop": true,
+		"experimentalDecorators": true,
+		"moduleResolution": "node",
+		"importHelpers": true,
+
+		// Environment Settings
+		// See also https://aka.ms/tsconfig/module
+		"target": "ES2022",
+		"module": "CommonJS",
+
+		// Other Outputs
+		"sourceMap": true,
+		"declaration": true,
+		"declarationMap": true,
+
+		// Stricter Typechecking Options
+		"noUncheckedIndexedAccess": false,
+		"exactOptionalPropertyTypes": true,
+
+		// Style Options
+		"noImplicitReturns": true,
+		"noImplicitOverride": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"noFallthroughCasesInSwitch": true,
+		"noPropertyAccessFromIndexSignature": true,
+
+		// Recommended Options
+		"strict": true,
+		"jsx": "react-jsx",
+		"verbatimModuleSyntax": false,
+		"isolatedModules": true,
+		"noUncheckedSideEffectImports": true,
+		"moduleDetection": "force",
+		"skipLibCheck": true,
+		"forceConsistentCasingInFileNames": true
+	}
+}

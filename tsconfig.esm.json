@@ -1,0 +1,7 @@
+{
+	"extends": "./tsconfig.json", // Inherit all settings from the base config
+	"compilerOptions": {
+		"module": "ES2022", // Output modern ES Modules
+		"outDir": "./dist/esm" // Output to a separate 'esm' subfolder
+	}
+}

@@ -1,0 +1,40 @@
+{
+	"name": "@signaloid/uxdata-tools",
+	"version": "2025.10.15",
+	"description": "Signaloid Ux Data tools provides handling and plotting of Signaloid Ux Strings and Ux Binaries, using the Apache ECharts library",
+	"exports": {
+		".": {
+			"import": {
+				"types": "./dist/esm/index.d.ts",
+				"default": "./dist/esm/index.js"
+			},
+			"require": {
+				"types": "./dist/cjs/index.d.ts",
+				"default": "./dist/cjs/index.js"
+			}
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/signaloid/Signaloid-UxData-Tools-Typescript.git"
+	},
+	"publishConfig": {
+		"registry": "https://npm.pkg.github.com/"
+	},
+	"scripts": {
+		"build": "npm run clean && tsc -p tsconfig.json && tsc -p tsconfig.esm.json",
+		"clean": "rm -rf dist"
+	},
+	"keywords": [],
+	"author": "Signaloid",
+	"license": "ISC",
+	"dependencies": {
+		"echarts": "^6.0.0"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.3"
+	}
+}
