@@ -114,7 +114,7 @@ const pattern = new RegExp(`(?<endian>[${endiannessChars}]*)(?<count>[0-9]*)(?<t
  * @returns An array of bytes containing the values of `arr` packed according
  * to the format string `format`.
  */
-function pack(format: string, arr: Array<null | number>): null | Array<number> {
+function pack(format: string, arr: Array<null | number | bigint>): null | Array<number> {
 	const groups: Array<RegExpMatchArray> = [...format.matchAll(pattern)];
 
 	if (!groups.length) {
@@ -140,7 +140,7 @@ function pack(format: string, arr: Array<null | number>): null | Array<number> {
 			const bf = new Uint8Array(value_size);
 			const dv = new DataView(bf.buffer);
 
-			let num: null | number | BigInt = arr[arrIndex];
+			let num: null | number | bigint = arr[arrIndex];
 			arrIndex++;
 			if (num === null) {
 				num = 0;
@@ -174,7 +174,7 @@ function pack(format: string, arr: Array<null | number>): null | Array<number> {
  * @param buffer
  * @returns
  */
-function unpack(format: string, buffer: Array<number>): null | Array<number> {
+function unpack(format: string, buffer: Array<number>): null | Array<number | bigint> {
 	const groups: Array<RegExpMatchArray> = [...format.matchAll(pattern)];
 
 	if (!groups.length) {
@@ -182,7 +182,7 @@ function unpack(format: string, buffer: Array<number>): null | Array<number> {
 		return null;
 	}
 
-	let res: Array<number> = [];
+	let res: Array<number | bigint> = [];
 	let bufferIndex: number = 0;
 	for (const g of groups) {
 		if (g.groups === undefined) {

@@ -22,14 +22,26 @@
 
 
 /*
- * Use this multiplier to convert to/from floating point to fixed point masses
+ * Use these multipliers to convert to/from floating point to fixed point masses
  */
-const FIXED_POINT_ONE: number = 0x8000000000000000;
+const FIXED_POINT_ONE: bigint 	= 0x8000000000000000n; // 2^63
+const PRECISION: number 	= 1e12; // 12 decimal places
+const PRECISION_BIG: bigint 	= BigInt(PRECISION);
+
+
+function fixed_point_to_float(value: bigint): number {
+	return Number(value * PRECISION_BIG / FIXED_POINT_ONE) / PRECISION;
+}
+
+
+function float_to_fixed_point(value: number): bigint {
+	return BigInt(Math.round(value * PRECISION)) * FIXED_POINT_ONE / PRECISION_BIG;
+}
 
 
 class DiracDelta {
 	position: number = 0;
-	_raw_mass: number = 0;
+	_raw_mass: bigint = 0n;
 	_mass: number = 0;
 
 	/**
@@ -46,7 +58,7 @@ class DiracDelta {
 	 */
 	constructor(options: {
 		position: number,
-		raw_mass?: number,
+		raw_mass?: bigint,
 		mass?: number
 	}) {
 		this.position = options.position;
@@ -63,7 +75,7 @@ class DiracDelta {
 	 *
 	 * @returns The mass
 	 */
-	get raw_mass(): number {
+	get raw_mass(): bigint {
 		return this._raw_mass;
 	}
 
@@ -72,15 +84,9 @@ class DiracDelta {
 	 *
 	 * @param value The 64bit fixed-point mass to use.
 	 */
-	set raw_mass(value: number) {
+	set raw_mass(value: bigint) {
 		this._raw_mass = value;
-
-		/*
-		 * The probability mass is a fixed-point format with FIXED_POINT_ONE
-		 * representing 1.0. Dividing by FIXED_POINT_ONE gets the number it
-		 * represents.
-		 */
-		this._mass = Number(value) / FIXED_POINT_ONE;
+		this._mass = fixed_point_to_float(value);
 	}
 
 	/**
@@ -101,14 +107,9 @@ class DiracDelta {
 		this._mass = value;
 
 		if (Number.isNaN(this._mass)) {
-			this._raw_mass = 0;
+			this._raw_mass = 0n;
 		} else {
-			/*
-			 * The probability mass is a fixed-point format with FIXED_POINT_ONE
-			 * representing 1.0. Multiplying by FIXED_POINT_ONE gets the fixed point
-			 * it represents.
-			 */
-			this._raw_mass = Number(value * FIXED_POINT_ONE);
+			this._raw_mass = float_to_fixed_point(value);
 		}
 	}
 
@@ -239,5 +240,9 @@ class DiracDelta {
 }
 
 export {
-	DiracDelta
+	DiracDelta,
+	FIXED_POINT_ONE,
+	PRECISION,
+	fixed_point_to_float,
+	float_to_fixed_point,
 }

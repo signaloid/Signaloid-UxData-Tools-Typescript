@@ -462,6 +462,8 @@ function signaloidChartOption(plot_data: PlotData): echarts.EChartsOption {
 	//@ts-ignore
 	option.series.push(...distributionPlotSeries);
 
+	option.grid = { top: 0, bottom: 0, left: 0, right: 0, };
+
 	if (plot_data.dist.has_special_values) {
 		//@ts-ignore
 		option.xAxis.push(distributionXAxis_specialValues_default());
