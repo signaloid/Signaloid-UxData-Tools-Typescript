@@ -57,6 +57,15 @@ function bytes_fromhex(str: string): Array<number> {
 }
 
 
+
+type ObjectValues<T> = T[keyof T];
+
+const UxRepresentationTypeE = {
+	Athens: 0x04,
+} as const;
+type UxRepresentationType = ObjectValues<typeof UxRepresentationTypeE>;
+
+
 /*
  * The format strings used with struct.pack & struct.unpack for parsing and
  * dumping `DistributionalValue` data.
@@ -109,12 +118,12 @@ class DistributionalValue {
 	constructor(
 		{
 			particle_value = null,
-			UR_type = null,
+			UR_type = UxRepresentationTypeE.Athens,
 			dirac_deltas = [],
 			double_precision = true
 		}: {
 			particle_value?: null | number,
-			UR_type?: null | number,
+			UR_type?: UxRepresentationType,
 			dirac_deltas?: Array<DiracDelta>,
 			double_precision?: boolean
 		}
@@ -171,7 +180,7 @@ class DistributionalValue {
 	 *
 	 * @returns The list of all the Dirac Delta fixed-point masses.
 	 */
-	get raw_masses(): Array<number> {
+	get raw_masses(): Array<bigint> {
 		return Array.from(this.dirac_deltas, dd => dd.raw_mass);
 	}
 
@@ -411,12 +420,12 @@ class DistributionalValue {
 			/*
 			 * Pack the position using either double or float precision
 			 */
-			buffer = buffer.concat(struct.pack(position_format, [this.positions[i]]) || []);
+			buffer = buffer.concat(struct.pack(position_format, [this.dirac_deltas[i].position]) || []);
 
 			/*
 			 * Probability mass is always uint64_t
 			 */
-			buffer = buffer.concat(struct.pack(fmt["mass"], [this.raw_masses[i]]) || []);
+			buffer = buffer.concat(struct.pack(fmt["mass"], [this.dirac_deltas[i].raw_mass]) || []);
 		}
 
 		if (to_str) {
@@ -499,7 +508,7 @@ class DistributionalValue {
 			fmt = STRUCT_FORMATS["bytes"];
 
 			buffer = dist;
-			dist_value.particle_value = (struct.unpack(fmt["particle"], buffer.slice(offset, offset + 8)) || [null])[0];
+			dist_value.particle_value = Number((struct.unpack(fmt["particle"], buffer.slice(offset, offset + 8)) || [null])[0]);
 			offset += 8;
 		} else {
 			console.error("Unsupported input.", typeof (dist));
@@ -516,7 +525,7 @@ class DistributionalValue {
 			return null;
 		}
 
-		dist_value.UR_type = (struct.unpack(fmt["UR_type"], buffer.slice(offset, offset + 1)) || [0])[0];
+		dist_value.UR_type = Number((struct.unpack(fmt["UR_type"], buffer.slice(offset, offset + 1)) || [0])[0]);
 		offset += 1;
 
 		/*
@@ -525,10 +534,10 @@ class DistributionalValue {
 		 */
 		offset += 8;
 
-		dist_value.mean = (struct.unpack(fmt["mean"], buffer.slice(offset, offset + 8)) || [0])[0];
+		dist_value.mean = Number((struct.unpack(fmt["mean"], buffer.slice(offset, offset + 8)) || [0])[0]);
 		offset += 8;
 
-		const UR_order = (struct.unpack(fmt["UR_order"], buffer.slice(offset, offset + 4)) || [0])[0];
+		const UR_order = Number((struct.unpack(fmt["UR_order"], buffer.slice(offset, offset + 4)) || [0])[0]);
 		offset += 4;
 
 		/*
@@ -561,11 +570,11 @@ class DistributionalValue {
 		for (let i = 0; i < UR_order; i++) {
 			const support_position_bytes: Array<number> = buffer.slice(offset, offset + bytes_per_position);
 			offset += bytes_per_position;
-			const position: number = (struct.unpack(position_format, support_position_bytes) || [0])[0];
+			const position: number = Number((struct.unpack(position_format, support_position_bytes) || [0])[0]);
 
 			const mass_bytes: Array<number> = buffer.slice(offset, offset + 8);
 			offset += 8;
-			const raw_mass: number = (struct.unpack(fmt["mass"], mass_bytes) || [0])[0];
+			const raw_mass: bigint = BigInt((struct.unpack(fmt["mass"], mass_bytes) || [0n])[0]);
 
 			dist_value.dirac_deltas.push(new DiracDelta({ position, raw_mass }));
 		}
@@ -691,7 +700,7 @@ class DistributionalValue {
 		}
 
 		for (const dd of this.dirac_deltas) {
-			if (!dd.isFinite) {
+			if (!dd.isFinite()) {
 				return false;
 			}
 		}
@@ -735,7 +744,7 @@ class DistributionalValue {
 		}
 
 		for (let i = 0; i < this.UR_order - 1; i++) {
-			if (!Number.isFinite(this.dirac_deltas[i])) {
+			if (!this.dirac_deltas[i].isFinite()) {
 				return false;
 			}
 
@@ -762,7 +771,7 @@ class DistributionalValue {
 		this.pos_inf_dirac_delta.mass = 0;
 		const finite_dirac_deltas: Array<DiracDelta> = [];
 		for (const dd of this.dirac_deltas) {
-			if (Number.isFinite(dd.position)) {
+			if (dd.isFinite()) {
 				finite_dirac_deltas.push(dd);
 			} else if (isNaN(dd.position)) {
 				this.nan_dirac_delta.mass += dd.mass;
@@ -826,7 +835,7 @@ class DistributionalValue {
 			return;
 		}
 
-		this.combine_dirac_deltas(0, 0);
+		this.combine_dirac_deltas();
 	}
 
 	/**
@@ -961,8 +970,8 @@ class DistributionalValue {
 		const boundary_probabilities = Array(number_of_boundaries).fill(NaN);
 
 		for (let i = 0, j = 0; i < number_of_boundaries; i += 2, j++) {
-			boundary_positions[i] = this.positions[j];
-			boundary_probabilities[i] = this.masses[j];
+			boundary_positions[i] = this.dirac_deltas[j].position;
+			boundary_probabilities[i] = this.dirac_deltas[j].mass;
 		}
 
 		for (let n = 0; n < ttr_order; n++) {
@@ -980,6 +989,91 @@ class DistributionalValue {
 
 		return boundary_positions
 			.every((val, i, arr) => i === 0 || arr[i - 1] < val);
+	}
+
+	public interpolate(numPoints: number): void {
+		this.cure();
+
+		if (this.UR_order <= 1) {
+			return;
+		}
+
+		function linspace(start: number, end: number, n: number): number[] {
+			if (n <= 0) {
+				return [];
+			}
+
+			if (n === 1) {
+				return [(start + end) / 2];
+			}
+
+			const diff = end - start;
+			const step = diff / (n - 1);
+			return Array.from({ length: n }, (_, i) => start + i * step);
+		}
+
+		numPoints = Math.floor(numPoints);
+
+		const finite_dirac_deltas = this.finite_dirac_deltas;
+		const newSpace = linspace(
+			finite_dirac_deltas[0].position,
+			finite_dirac_deltas[finite_dirac_deltas.length - 1].position,
+			numPoints,
+		);
+
+		const new_dirac_deltas: DiracDelta[] = [];
+		let lowerBoundIndex = 1;
+		for (const newLocation of newSpace) {
+			for (let i = lowerBoundIndex; i < finite_dirac_deltas.length; i++) {
+				if (finite_dirac_deltas[i].position > newLocation) {
+					lowerBoundIndex = i;
+					break;
+				}
+			}
+
+			const lowerDelta = finite_dirac_deltas[lowerBoundIndex - 1];
+			const upperDelta = finite_dirac_deltas[lowerBoundIndex];
+
+			const range = upperDelta.position - lowerDelta.position;
+			const lowerDeltaContribution =
+				range === 0 ? 0.5 : (upperDelta.position - newLocation) / range;
+			const upperDeltaContribution =
+				range === 0 ? 0.5 : (newLocation - lowerDelta.position) / range;
+
+			const newDeltaWeight = (
+				lowerDeltaContribution * lowerDelta.mass
+				+ upperDeltaContribution * upperDelta.mass
+			);
+			new_dirac_deltas.push(new DiracDelta({
+				position: newLocation,
+				mass: newDeltaWeight
+			}));
+		}
+
+		if (this.has_special_values) {
+			new_dirac_deltas.push(this.nan_dirac_delta);
+			new_dirac_deltas.push(this.neg_inf_dirac_delta);
+			new_dirac_deltas.push(this.pos_inf_dirac_delta);
+		}
+
+		this._dirac_deltas = new_dirac_deltas;
+		this._mean = null;
+		this._variance = null;
+	}
+
+	public normalize_dirac_deltas(): void {
+		let total_mass: number = 0;
+		for (const dd of this.dirac_deltas) {
+			total_mass += dd.mass;
+		}
+
+		if (total_mass <= 0 || Number.isNaN(total_mass) || !Number.isFinite(total_mass)) {
+			return;
+		}
+
+		for (const dd of this.dirac_deltas) {
+			dd.mass /= total_mass;
+		}
 	}
 }
 
