@@ -48,5 +48,7 @@ const distValue = DistributionalValue.parse(ux_string);
 const plotData = new PlotData(distValue);
 
 /* Mount the plot */
-signaloidChartMount(chart, plot_data);
+signaloidChartMount(chart, plot_data, { xAxisName: "Latency (ns)" });
 ```
+
+The third argument is optional, and takes `xAxisName` and `yAxisName`. Size the container yourself, at the exported `distributionPlotAspectRatio` (width to height).
