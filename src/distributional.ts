@@ -93,6 +93,11 @@ const STRUCT_FORMATS: { [id: string]: { [id: string]: string }; } = {
 	}
 };
 
+/*
+ * First byte of the Ux Binary Data format, used to distinguish it from the legacy format
+ */
+const UX_BINARY_FORMAT_MARKER = 0xF0;
+
 
 class DistributionalValue {
 	particle_value: null | number = null;
@@ -340,26 +345,44 @@ class DistributionalValue {
 	 *
 	 * @returns: The Ux string or the Ux bytes with particle value for the `DistributionalValue`.
 	 *
-	 * Ux-string format specification:
+	 * Ux String format specification:
 	 * 	- Particle value (double in string format)
-	 * 	- "Ux"							(   2 chars)
-	 * 	- Representation type (uint8_t)				(   2 chars)
-	 * 	- Number of samples (uint64_t)				(  16 chars) (unused)
-	 * 	- Mean value of distribution (double)			(  16 chars)
-	 * 	- Number of non-zero mass Dirac deltas (uint32_t)	(   8 chars)
+	 * 	- "Ux"                                              (   2 chars)
+	 * 	- Representation type (uint8_t)                     (   2 chars)
+	 * 	- Number of samples (uint64_t)                      (  16 chars) (unused)
+	 * 	- Mean value of distribution (double)               (  16 chars)
+	 * 	- Number of non-zero mass Dirac deltas (uint32_t)   (   8 chars)
 	 * 	- Pairs of:
-	 * 		- Support position (float/double)		(8/16 chars)
-	 * 		- Probability mass (uint64_t)			(  16 chars)
+	 * 	- Support position (float/double)               (8/16 chars)
+	 * 	- Probability mass (uint64_t)                   (  16 chars)
 	 *
-	 * Ux-bytes specification:
-	 * 	- Particle value (double)				(  8 bytes)
-	 * 	- Representation type (uint8_t)				(  1 byte )
-	 * 	- Number of samples (uint64_t)				(  8 bytes) (unused)
-	 * 	- Mean value of distribution (double)			(  8 bytes)
-	 * 	- Number of non-zero mass Dirac deltas (uint32_t)	(  4 bytes)
+	 * Ux Binary specification:
+	 * 	The Ux Binary Data layout has a 3-byte marker (0xF00000) between
+	 * 	the particle value and the representation type. The legacy format
+	 * 	does not have this marker. The `export` function always produces the
+	 * 	Ux Binary layout and not the legacy. The `parse` function accepts
+	 * 	both (see `parse`).
+	 * 	For more information see https://docs.signaloid.io/docs/uxhw-api/ux-data-format/
+	 *
+	 * 	Ux Binary Data Format:
+	 * 	- Particle value (double)                           (  8 bytes)
+	 * 	- Representation type (uint32_t)                    (  4 bytes)
+	 * 	- Number of samples (uint64_t)                      (  8 bytes) (unused)
+	 * 	- Mean value of distribution (double)               (  8 bytes)
+	 * 	- Number of non-zero mass Dirac deltas (uint32_t)   (  4 bytes)
 	 * 	- Pairs of:
-	 * 		- Support position (float/double)		(4/8 bytes)
-	 * 		- Probability mass (uint64_t)			(  8 bytes)
+	 * 		- Support position (float/double)               (4/8 bytes)
+	 * 		- Probability mass (uint64_t)                   (  8 bytes)
+	 *
+	 * 	Legacy format:
+	 * 	- Particle value (double)                           (  8 bytes)
+	 * 	- Representation type (uint8_t)                     (  1 byte )
+	 * 	- Number of samples (uint64_t)                      (  8 bytes) (unused)
+	 * 	- Mean value of distribution (double)               (  8 bytes)
+	 * 	- Number of non-zero mass Dirac deltas (uint32_t)   (  4 bytes)
+	 * 	- Pairs of:
+	 * 		- Support position (float/double)               (4/8 bytes)
+	 * 		- Probability mass (uint64_t)                   (  8 bytes)
 	 */
 	public export = (to_str: boolean = true): string | Array<number> => {
 		/*
@@ -382,6 +405,15 @@ class DistributionalValue {
 			 */
 			const particle_value = this.particle_value !== null ? this.particle_value : 0;
 			buffer = buffer.concat(struct.pack(fmt["particle"], [particle_value]) || []);
+
+			/*
+			 * Ux Binary Data format specifies:
+			 * - start byte (0xF0),
+			 * - followed by 2 padding bytes (0x0000).
+			 * These are inserted between the particle value and the
+			 * representation type.
+			 */
+			buffer = buffer.concat([UX_BINARY_FORMAT_MARKER, 0x00, 0x00]);
 		}
 
 		/*
@@ -446,26 +478,44 @@ class DistributionalValue {
 	 *
 	 * @returns The constructed `DistributionalValue` or null if parsing fails.
 	 *
-	 * Ux-string format specification:
+	 * Ux String format specification:
 	 * 	- Particle value (double in string format)
-	 * 	- "Ux"							(   2 chars)
-	 * 	- Representation type (uint8_t)				(   2 chars)
-	 * 	- Number of samples (uint64_t)				(  16 chars) (unused)
-	 * 	- Mean value of distribution (double)			(  16 chars)
-	 * 	- Number of non-zero mass Dirac deltas (uint32_t)	(   8 chars)
+	 * 	- "Ux"                                              (   2 chars)
+	 * 	- Representation type (uint8_t)                     (   2 chars)
+	 * 	- Number of samples (uint64_t)                      (  16 chars) (unused)
+	 * 	- Mean value of distribution (double)               (  16 chars)
+	 * 	- Number of non-zero mass Dirac deltas (uint32_t)   (   8 chars)
 	 * 	- Pairs of:
-	 * 		- Support position (float/double)		(8/16 chars)
-	 * 		- Probability mass (uint64_t)			(  16 chars)
+	 * 	- Support position (float/double)               (8/16 chars)
+	 * 	- Probability mass (uint64_t)                   (  16 chars)
 	 *
-	 * Ux-bytes specification:
-	 * 	- Particle value (double)				(  8 bytes)
-	 * 	- Representation type (uint8_t)				(  1 byte )
-	 * 	- Number of samples (uint64_t)				(  8 bytes) (unused)
-	 * 	- Mean value of distribution (double)			(  8 bytes)
-	 * 	- Number of non-zero mass Dirac deltas (uint32_t)	(  4 bytes)
+	 * Ux Binary specification:
+	 * 	The Ux Binary Data layout has a 3-byte marker (0xF00000) between
+	 * 	the particle value and the representation type. The legacy format
+	 * 	does not have this marker. The `export` function always produces the
+	 * 	Ux Binary layout and not the legacy. The `parse` function accepts
+	 * 	both (see `parse`).
+	 * 	For more information see https://docs.signaloid.io/docs/uxhw-api/ux-data-format/
+	 *
+	 * 	Ux Binary Data Format:
+	 * 	- Particle value (double)                           (  8 bytes)
+	 * 	- Representation type (uint32_t)                    (  4 bytes)
+	 * 	- Number of samples (uint64_t)                      (  8 bytes) (unused)
+	 * 	- Mean value of distribution (double)               (  8 bytes)
+	 * 	- Number of non-zero mass Dirac deltas (uint32_t)   (  4 bytes)
 	 * 	- Pairs of:
-	 * 		- Support position (float/double)		(4/8 bytes)
-	 * 		- Probability mass (uint64_t)			(  8 bytes)
+	 * 		- Support position (float/double)               (4/8 bytes)
+	 * 		- Probability mass (uint64_t)                   (  8 bytes)
+	 *
+	 * 	Legacy format:
+	 * 	- Particle value (double)                           (  8 bytes)
+	 * 	- Representation type (uint8_t)                     (  1 byte )
+	 * 	- Number of samples (uint64_t)                      (  8 bytes) (unused)
+	 * 	- Mean value of distribution (double)               (  8 bytes)
+	 * 	- Number of non-zero mass Dirac deltas (uint32_t)   (  4 bytes)
+	 * 	- Pairs of:
+	 * 		- Support position (float/double)               (4/8 bytes)
+	 * 		- Probability mass (uint64_t)                   (  8 bytes)
 	 */
 	static parse = (
 		dist: string | Array<number>,
@@ -508,8 +558,26 @@ class DistributionalValue {
 			fmt = STRUCT_FORMATS["bytes"];
 
 			buffer = dist;
+
+			/*
+			 * Need 8 bytes for the particle value plus at least 1 more byte
+			 * to detect the layout (see below).
+			 */
+			if (buffer.length < 9) {
+				console.error(`Cannot parse distributional value. Buffer too small (${buffer.length} bytes)`);
+				return null;
+			}
+
 			dist_value.particle_value = Number((struct.unpack(fmt["particle"], buffer.slice(offset, offset + 8)) || [null])[0]);
 			offset += 8;
+
+			if (buffer[offset] == UX_BINARY_FORMAT_MARKER) {
+				/*
+				 * If offset has the Ux Binary data format marker then we are not
+				 * in the legacy format. Skip the 3-byte marker (0xF00000).
+				 */
+				offset += 3;
+			}
 		} else {
 			console.error("Unsupported input.", typeof (dist));
 			return null;
