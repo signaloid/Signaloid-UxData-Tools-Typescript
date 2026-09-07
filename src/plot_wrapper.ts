@@ -33,7 +33,11 @@ const kTickLabelSize = 13;
 const kAxisNameSize = 14;
 const kMeanColor = "rgb(0, 100, 0)";
 const kMeanLabel = "E(X)";
-const kYAxisHeadroom = 1.2;
+const kYAxisHeadroom = 1.1;
+const kXAxisRangePadding = 0.05;
+/* signaloid-python's shared-xlim quantiles: Monte Carlo tails must not stretch a shared domain. */
+const kRangeLowerQuantile = 0.005;
+const kRangeUpperQuantile = 0.995;
 const kXAxisName = "Distribution Support";
 const kYAxisName = "Probability Density";
 const kSpecialValuesYAxisName = "Probability Amplitude";
@@ -52,6 +56,9 @@ const distributionPlotAspectRatio = 1.69;
 type SignaloidChartOptions = {
 	xAxisName?: string;
 	yAxisName?: string;
+	xlim?: [number, number];
+	ylim?: [number, number];
+	offsetExponent?: number;
 };
 
 
@@ -98,8 +105,12 @@ const diracDeltaStyle_default = () => ({
 });
 
 function diracDeltaRenderer(_: any, api: any) {
-	const diracDeltaPosition = api.value();
-	const points = [api.coord([diracDeltaPosition, 0]), api.coord([diracDeltaPosition, 1])];
+	const diracDeltaPosition = api.value(0);
+	const diracDeltaMass = api.value(1);
+	const points = [
+		api.coord([diracDeltaPosition, 0]),
+		api.coord([diracDeltaPosition, diracDeltaMass]),
+	];
 
 	return {
 		type: "polyline",
@@ -111,8 +122,8 @@ function diracDeltaRenderer(_: any, api: any) {
 }
 
 function diracDeltaArrowRenderer(_: any, api: any) {
-	const diracDeltaPosition = api.value();
-	const position = api.coord([diracDeltaPosition, 1]);
+	const diracDeltaPosition = api.value(0);
+	const position = api.coord([diracDeltaPosition, api.value(1)]);
 
 	return {
 		type: "polygon",
@@ -163,7 +174,62 @@ const numericAxisLabel_default = (exponent: number = 0) => ({
 	formatter: plainLabel(exponent),
 });
 
+/** The y axis maximum `signaloidChartOption` derives, headroom included. */
+function densityAxisMaximum(plot_data: PlotData): number {
+	return plot_data.max_value > 0 ? plot_data.max_value * kYAxisHeadroom : kYAxisHeadroom;
+}
+
+/**
+ * The axis facts two or more plots should all draw on, shaped to spread into
+ * `signaloidChartOption`'s chart options. The x range is the union of each
+ * input's trimmed support, padded 5% each side. An input whose trimmed support
+ * is not finite contributes nothing, and with no finite support at all `xlim`
+ * is omitted. signaloid-python's `_compute_shared_xlim` trims only adversary
+ * distributions and gives the rest their full support, whereas this trims
+ * every input because this API has no adversary concept.
+ *
+ * @param plot_datas The plots that should share their axes.
+ *
+ * @returns The shared `xlim`, `ylim`, and `offsetExponent`.
+ */
+function sharedAxes(plot_datas: Array<PlotData>): SignaloidChartOptions {
+	if (plot_datas.length === 0) {
+		return {};
+	}
+
+	let min_x: number = Number.POSITIVE_INFINITY;
+	let max_x: number = Number.NEGATIVE_INFINITY;
+	for (const plot_data of plot_datas) {
+		const low: number = plot_data.dist.inverse_cdf(kRangeLowerQuantile);
+		const high: number = plot_data.dist.inverse_cdf(kRangeUpperQuantile);
+
+		if (!Number.isFinite(low) || !Number.isFinite(high) || high < low) {
+			continue;
+		}
+
+		min_x = Math.min(min_x, low);
+		max_x = Math.max(max_x, high);
+	}
+
+	const y_max: number = Math.max(...plot_datas.map(densityAxisMaximum));
+	const options: SignaloidChartOptions = {
+		ylim: [0, y_max],
+		offsetExponent: offsetExponent(y_max),
+	};
+
+	if (Number.isFinite(min_x) && Number.isFinite(max_x)) {
+		const range_spacing: number = kXAxisRangePadding * (max_x - min_x);
+		options.xlim = [min_x - range_spacing, max_x + range_spacing];
+	}
+
+	return options;
+}
+
 function offsetExponent(max: number): number {
+	if (!(max > 0)) {
+		return 0;
+	}
+
 	const exponent = Math.floor(Math.log10(max));
 
 	/* Below this the raw labels are shorter than the header. */
@@ -196,7 +262,9 @@ function mirroredAxis(axis: any, position: string) {
 /* Default options */
 const distributionYAxis_default = (
 	max: number,
-	name: string = kYAxisName
+	name: string = kYAxisName,
+	min: number = 0,
+	exponent: number = offsetExponent(max)
 ): echarts.YAXisComponentOption => ({
 	type: "value",
 	name: name,
@@ -204,11 +272,11 @@ const distributionYAxis_default = (
 	nameLocation: "middle",
 	nameTextStyle: axisNameTextStyle_default(),
 	nameGap: kAxisNameGap.y,
-	min: 0,
+	min: min,
 	max: max,
 	...frame_default(kDensityFrame),
 	splitLine: splitLine_default(),
-	axisLabel: numericAxisLabel_default(offsetExponent(max)),
+	axisLabel: numericAxisLabel_default(exponent),
 });
 
 const meanMarkLine_default = () => ({
@@ -250,6 +318,7 @@ const distributionPlotSeries_diracDelta_default = () => ([
 		xAxisIndex: 0,
 		yAxisIndex: 0,
 		type: "custom",
+		clip: true,
 		renderItem: diracDeltaArrowRenderer,
 		tooltip: {
 			show: false,
@@ -263,6 +332,7 @@ const distributionPlotSeries_diracDelta_default = () => ([
 		xAxisIndex: 0,
 		yAxisIndex: 0,
 		type: "custom",
+		clip: true,
 		renderItem: diracDeltaRenderer,
 		tooltip: {
 			show: false,
@@ -280,6 +350,7 @@ const distributionPlotSeries_bin_default = () => ([
 		xAxisIndex: 0,
 		yAxisIndex: 0,
 		type: "custom",
+		clip: true,
 		renderItem: binRenderer,
 		dimensions: ["from", "to", "height", "mass"],
 		encode: {
@@ -403,26 +474,17 @@ function signaloidChartOption(
 	chart_options: SignaloidChartOptions = {}
 ): echarts.EChartsOption {
 	let distributionPlotSeries;
-	let yAxisMax: number;
+	const mean: null | number = plot_data.dist.mean;
+	const has_finite_mean: boolean = mean !== null && Number.isFinite(mean);
 
-	if (plot_data.dist.UR_order === 1) {
-		/*
-		 * For plotting a Ux value that has only one dirac delta
-		 */
-		let data = [plot_data.positions[0]];
+	if (plot_data.positions.length === 1) {
+		let data = [[plot_data.positions[0], plot_data.masses[0]]];
 		distributionPlotSeries = distributionPlotSeries_diracDelta_default();
 		//@ts-ignore
 		distributionPlotSeries[0].data = data;
 		//@ts-ignore
 		distributionPlotSeries[1].data = data;
-		//@ts-ignore
-		distributionPlotSeries[1].markLine.data[0].xAxis = plot_data.dist.mean;
-
-		yAxisMax = kYAxisHeadroom;
 	} else {
-		/*
-		 * For plotting a ux value that has distributional data
-		 */
 		let data: Array<object> = [];
 		for (let i = 0; i < plot_data.positions.length - 1; i++) {
 			data.push({
@@ -437,20 +499,40 @@ function signaloidChartOption(
 		distributionPlotSeries = distributionPlotSeries_bin_default();
 		//@ts-ignore
 		distributionPlotSeries[0].data = data;
-		//@ts-ignore
-		distributionPlotSeries[0].markLine.data[0].xAxis = plot_data.dist.mean;
-
-		/* `toPrecision` keeps a sub-unit maximum off zero. */
-		yAxisMax = plot_data.max_value > 0
-			? Number((plot_data.max_value * kYAxisHeadroom).toPrecision(3))
-			: kYAxisHeadroom;
 	}
 
-	const distributionYAxis = distributionYAxis_default(yAxisMax, chart_options.yAxisName);
+	const meanSeries: any = distributionPlotSeries[distributionPlotSeries.length - 1];
+	if (has_finite_mean) {
+		meanSeries.markLine.data[0].xAxis = mean;
+	} else {
+		delete meanSeries.markLine;
+	}
+
+	const yAxisMax: number = chart_options.ylim
+		? chart_options.ylim[1]
+		: densityAxisMaximum(plot_data);
+	const exponent: number = chart_options.offsetExponent ?? offsetExponent(yAxisMax);
+
+	const distributionYAxis = distributionYAxis_default(
+		yAxisMax,
+		chart_options.yAxisName,
+		chart_options.ylim ? chart_options.ylim[0] : 0,
+		exponent
+	);
 	const distributionXAxis = distributionXAxis_default(chart_options.xAxisName);
-	if (plot_data.positions.length > 0) {
-		distributionXAxis.min = plot_data.min_range;
-		distributionXAxis.max = plot_data.max_range;
+	if (chart_options.xlim) {
+		[distributionXAxis.min, distributionXAxis.max] = chart_options.xlim;
+	} else if (plot_data.positions.length > 0) {
+		const min_x: number = has_finite_mean
+			? Math.min(mean as number, plot_data.min_range)
+			: plot_data.min_range;
+		const max_x: number = has_finite_mean
+			? Math.max(mean as number, plot_data.max_range)
+			: plot_data.max_range;
+		const range_spacing: number = kXAxisRangePadding * (max_x - min_x);
+
+		distributionXAxis.min = min_x - range_spacing;
+		distributionXAxis.max = max_x + range_spacing;
 	}
 
 	const xAxis: Array<any> = [distributionXAxis];
@@ -476,8 +558,6 @@ function signaloidChartOption(
 	/* Mirrors last: the series address axes by index. */
 	xAxis.push(...xAxis.map(axis => mirroredAxis(axis, "top")));
 	yAxis.push(...yAxis.map(axis => mirroredAxis(axis, "right")));
-
-	const exponent: number = offsetExponent(yAxisMax);
 
 	return {
 		...option_default(),
@@ -520,6 +600,9 @@ export {
 	signaloidChartMount,
 	signaloidChartOption,
 	distributionPlotAspectRatio,
+	densityAxisMaximum,
+	offsetExponent,
+	sharedAxes,
 };
 
 export type { SignaloidChartOptions };

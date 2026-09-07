@@ -149,6 +149,15 @@ function pack(format: string, arr: Array<null | number | bigint>): null | Array<
 				num = BigInt(num);
 			}
 
+			if (
+				bufferType === Float32Array
+				&& typeof (num) === 'number'
+				&& Number.isFinite(num)
+				&& !Number.isFinite(Math.fround(num))
+			) {
+				throw EvalError(`${num} is too large to pack with the 'f' format.`);
+			}
+
 			//@ts-ignore
 			dv[setType](0, num);
 			const bytes = Array.from(new Uint8Array(dv.buffer));

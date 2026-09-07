@@ -26,16 +26,16 @@
  */
 const FIXED_POINT_ONE: bigint 	= 0x8000000000000000n; // 2^63
 const PRECISION: number 	= 1e12; // 12 decimal places
-const PRECISION_BIG: bigint 	= BigInt(PRECISION);
+const FIXED_POINT_ONE_FLOAT: number = Number(FIXED_POINT_ONE);
 
 
 function fixed_point_to_float(value: bigint): number {
-	return Number(value * PRECISION_BIG / FIXED_POINT_ONE) / PRECISION;
+	return Number(value) / FIXED_POINT_ONE_FLOAT;
 }
 
 
 function float_to_fixed_point(value: number): bigint {
-	return BigInt(Math.round(value * PRECISION)) * FIXED_POINT_ONE / PRECISION_BIG;
+	return BigInt(Math.trunc(value * FIXED_POINT_ONE_FLOAT));
 }
 
 
@@ -102,8 +102,14 @@ class DiracDelta {
 	 * Sets the Dirac Delta mass given a floating-point mass.
 	 *
 	 * @param value The floating-point mass to use.
+	 *
+	 * @throws EvalError: When the given mass is negative.
 	 */
 	set mass(value: number) {
+		if (value < 0) {
+			throw EvalError(`mass must be non-negative; got ${value}.`);
+		}
+
 		this._mass = value;
 
 		if (Number.isNaN(this._mass)) {
