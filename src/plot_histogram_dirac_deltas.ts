@@ -25,7 +25,14 @@ import { DiracDelta } from './dirac_delta';
 import { DistributionalValue } from './distributional';
 
 
+/** Every power of 2 a request can ask for, from the TTR floor up to `MAX_BINS`. */
+type PlottingResolution = 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024;
+
+
 class PlotData {
+	static MAX_BINS: number = 1024;
+	private static DISTINCT_POSITION_CAP: number = 8192;
+
 	dist: DistributionalValue;
 	plotting_resolution: null | number = null;
 	plotting_ttr_order: null | number = null;
@@ -34,20 +41,191 @@ class PlotData {
 	_widths: Array<number> = [];
 	_max_value: null | number = null;
 
+	/**
+	 * @param binning `@internal` — `from_samples` hands its pre-built
+	 * `[boundary_positions, bin_heights]` through here, skipping
+	 * `_construct_plot_data`. Not part of the signaloid-python API.
+	 */
 	constructor(
 		dist: DistributionalValue,
-		plotting_resolution?: number
+		plotting_resolution?: PlottingResolution,
+		binning?: [Array<number>, Array<number>]
 	) {
 		if (dist.mean === null || dist.UR_order == 0) {
 			throw EvalError("Failed to load data");
 		}
 
 		this.dist = dist;
-		if (plotting_resolution) {
+		if (plotting_resolution !== undefined) {
 			this.plotting_resolution = plotting_resolution;
 		}
 
+		if (binning !== undefined) {
+			this.positions = binning[0];
+			this.masses = binning[1];
+
+			return;
+		}
+
 		this._construct_plot_data();
+	}
+
+	/**
+	 * Resolves the plotting resolution to (N*2) where N is the machine
+	 * representation, capped at `MAX_BINS`.
+	 *
+	 * @throws EvalError: When the resolution is not a power of 2.
+	 */
+	private static _resolve_plotting_resolution(
+		UR_order: number,
+		requested: null | number
+	): PlottingResolution {
+		const machine_representation: number = 2 ** Math.floor(Math.log2(UR_order));
+		const plotting_resolution: number = Math.floor(
+			requested === null ?
+				Math.min(machine_representation * 2, PlotData.MAX_BINS) :
+				Math.min(machine_representation * 2, requested, PlotData.MAX_BINS)
+		);
+
+		/* Below 2 and for NaN there is no TTR order `_bin_pdf_to_ttr` bottoms out on. */
+		if (
+			!(plotting_resolution >= 2)
+			|| plotting_resolution > 2 ** Math.floor(Math.log2(plotting_resolution))
+		) {
+			throw EvalError(
+				"plot_histogram_dirac_deltas: plotting_resolution must be a power of 2!"
+			);
+		}
+
+		/* The guard above leaves only powers of 2 in [2, `MAX_BINS`]. */
+		return plotting_resolution as PlottingResolution;
+	}
+
+	/**
+	 * Constructs a `PlotData` from an array of float samples, binning them
+	 * into a uniform-width histogram at a resolution capped by `MAX_BINS`.
+	 *
+	 * Collapses samples onto distinct positions, then takes the ordinary route.
+	 *
+	 * @param samples The float samples, which may contain NaN and +/-Inf.
+	 * @param plotting_resolution The number of bins, a power of 2. Determined
+	 * from the sample count when not given.
+	 *
+	 * @returns The constructed `PlotData`.
+	 *
+	 * @throws EvalError: When the samples array is empty, or the resolution is
+	 * not a power of 2.
+	 */
+	static from_samples(
+		samples: ArrayLike<number>,
+		plotting_resolution?: PlottingResolution
+	): PlotData {
+		if (samples.length === 0) {
+			throw EvalError("samples array must not be empty.");
+		}
+
+		const mass_per_sample: number = 1 / samples.length;
+		let nan_mass: number = 0;
+		let neg_inf_mass: number = 0;
+		let pos_inf_mass: number = 0;
+		let pos_min: number = Number.POSITIVE_INFINITY;
+		let pos_max: number = Number.NEGATIVE_INFINITY;
+		let total_weighted_position: number = 0;
+		let total_mass: number = 0;
+		const distinct_positions: Map<number, number> = new Map();
+		let distinct_overflowed: boolean = false;
+
+		for (let i = 0; i < samples.length; i++) {
+			const position: number = samples[i];
+			total_weighted_position += position * mass_per_sample;
+			total_mass += mass_per_sample;
+
+			if (Number.isFinite(position)) {
+				if (position < pos_min) {
+					pos_min = position;
+				}
+				if (position > pos_max) {
+					pos_max = position;
+				}
+
+				if (!distinct_overflowed) {
+					const seen: undefined | number = distinct_positions.get(position);
+					if (seen !== undefined) {
+						distinct_positions.set(position, seen + mass_per_sample);
+					} else if (distinct_positions.size < PlotData.DISTINCT_POSITION_CAP) {
+						distinct_positions.set(position, mass_per_sample);
+					} else {
+						distinct_overflowed = true;
+					}
+				}
+			} else if (Number.isNaN(position)) {
+				nan_mass += mass_per_sample;
+			} else if (position === Number.NEGATIVE_INFINITY) {
+				neg_inf_mass += mass_per_sample;
+			} else {
+				pos_inf_mass += mass_per_sample;
+			}
+		}
+
+		const has_special_values: boolean = (
+			nan_mass > 0 || neg_inf_mass > 0 || pos_inf_mass > 0
+		);
+		const special_deltas: Array<DiracDelta> = ([
+			[Number.NaN, nan_mass],
+			[Number.NEGATIVE_INFINITY, neg_inf_mass],
+			[Number.POSITIVE_INFINITY, pos_inf_mass],
+		] as Array<[number, number]>)
+			.filter(([, mass]) => mass > 0)
+			.map(([position, mass]) => new DiracDelta({ position, mass }));
+
+		if (!distinct_overflowed) {
+			const dirac_deltas: Array<DiracDelta> = [];
+			for (const [position, mass] of distinct_positions) {
+				dirac_deltas.push(new DiracDelta({ position, mass }));
+			}
+
+			const dist: DistributionalValue = new DistributionalValue({
+				dirac_deltas: dirac_deltas.concat(special_deltas)
+			});
+			dist.mean = total_weighted_position / total_mass;
+
+			return new PlotData(dist, plotting_resolution);
+		}
+
+		/* ponytail: above the cap the resolution is pinned to MAX_BINS, so no TTR gate applies. */
+		const resolution: PlottingResolution = PlotData._resolve_plotting_resolution(
+			PlotData.DISTINCT_POSITION_CAP + (has_special_values ? 3 : 0),
+			plotting_resolution === undefined ? null : plotting_resolution
+		);
+		const [boundary_positions, bin_heights] = PlotData._uniform_histogram(
+			samples, mass_per_sample, pos_min, pos_max, resolution
+		);
+
+		const dirac_deltas: Array<DiracDelta> = [];
+		for (let i = 0; i < bin_heights.length; i++) {
+			const bin_mass: number = bin_heights[i] * (
+				boundary_positions[i + 1] - boundary_positions[i]
+			);
+			if (bin_mass > 0) {
+				dirac_deltas.push(new DiracDelta({
+					position: (boundary_positions[i] + boundary_positions[i + 1]) / 2,
+					mass: bin_mass
+				}));
+			}
+		}
+
+		const dist: DistributionalValue = new DistributionalValue({
+			dirac_deltas: dirac_deltas.concat(special_deltas)
+		});
+		dist.sort();
+		dist.mean = total_weighted_position / total_mass;
+
+		const plot_data: PlotData = new PlotData(
+			dist, resolution, [boundary_positions, bin_heights]
+		);
+		plot_data.plotting_ttr_order = Math.floor(Math.log2(resolution)) - 1;
+
+		return plot_data;
 	}
 
 	/**
@@ -304,7 +482,7 @@ class PlotData {
 			}
 		}
 
-		if (w0 === null || isFinite(det) || isNaN(det)) {
+		if (w0 === null || !isFinite(det) || isNaN(det)) {
 			/*
 			 * The boundary condition d/dx = 0.
 			 */
@@ -568,19 +746,67 @@ class PlotData {
 	}
 
 	/**
+	 * Bins the given positions into `resolution` equal-width bins spanning
+	 * [`pos_min`, `pos_max`], following `np.histogram`'s bin lookup to match
+	 * signaloid-python's edges exactly. Non-finite positions are skipped.
+	 *
+	 * @param masses The mass of each position, or one mass shared by all of them.
+	 *
+	 * @returns `[boundary_positions, bin_heights]`: the bin edges, and the
+	 * binned mass divided by the bin width.
+	 */
+	private static _uniform_histogram(
+		positions: ArrayLike<number>,
+		masses: ArrayLike<number> | number,
+		pos_min: number,
+		pos_max: number,
+		resolution: number
+	): [Array<number>, Array<number>] {
+		/* `np.linspace` places every edge but the last at `pos_min + i * step`. */
+		const step: number = (pos_max - pos_min) / resolution;
+		const boundary_positions: Array<number> = Array.from(
+			{ length: resolution + 1 }, (_, i) => pos_min + i * step
+		);
+		boundary_positions[resolution] = pos_max;
+
+		const binned_masses: Array<number> = Array(resolution).fill(0);
+		const norm: number = resolution / (pos_max - pos_min);
+		for (let i = 0; i < positions.length; i++) {
+			const position: number = positions[i];
+			if (!Number.isFinite(position)) {
+				continue;
+			}
+
+			/* `np.histogram`'s scaled index, then its correction against the edges. */
+			let bin: number = Math.trunc((position - pos_min) * norm);
+			if (bin >= resolution) {
+				bin = resolution - 1;
+			}
+			if (position < boundary_positions[bin]) {
+				bin -= 1;
+			} else if (position >= boundary_positions[bin + 1] && bin !== resolution - 1) {
+				bin += 1;
+			}
+
+			binned_masses[bin] += typeof masses === "number" ? masses : masses[i];
+		}
+
+		const bin_heights: Array<number> = binned_masses.map((mass, i) => {
+			const bin_width: number = boundary_positions[i + 1] - boundary_positions[i];
+			return bin_width !== 0 ? mass / bin_width : 0;
+		});
+
+		return [boundary_positions, bin_heights];
+	}
+
+	/**
 	 * Constructs the `PlotData`, after parsing the given `DistributionalValue`.
 	 * Generates the boundary positions and bin heights, ready for plotting.
 	 *
 	 * @throws ValueError: When the plotting_resolution is not a power of 2.
 	 */
 	private _construct_plot_data(): void {
-		//@ts-ignore
-		if (this.dist.UR_type != "MonteCarlo") {
-			/*
-			 * Create the list of finite Dirac deltas.
-			 */
-			this.dist.drop_zero_mass_positions();
-		}
+		this.dist.drop_zero_mass_positions();
 
 		this.dist.combine_dirac_deltas()
 
@@ -604,47 +830,45 @@ class PlotData {
 			return;
 		}
 
-		/*
-		 * Set plot resolution to (N*2) where N is machine representation
-		 */
-		const machine_representation: number = 2 ** Math.floor(Math.log2(this.dist.UR_order));
-		this.plotting_resolution = Math.floor(
-			this.plotting_resolution === null ?
-				machine_representation * 2 :
-				Math.min((machine_representation * 2), this.plotting_resolution)
-		)
-		const log2_of_plotting_resolution: number = Math.floor(Math.log2(this.plotting_resolution));
-		this.plotting_ttr_order = log2_of_plotting_resolution - 1;
+		this.plotting_resolution = PlotData._resolve_plotting_resolution(
+			this.dist.UR_order, this.plotting_resolution
+		);
+		this.plotting_ttr_order = Math.floor(Math.log2(this.plotting_resolution)) - 1;
 
-		if (
-			this.plotting_resolution > 2
-			&& this.plotting_resolution > 2 ** (this.plotting_ttr_order + 1)
-		) {
-			throw EvalError(
-				"plot_histogram_dirac_deltas: plotting_resolution must be a power of 2!"
-			);
+		if (this.dist.check_is_full_valid_TTR()) {
+			try {
+				let [boundary_positions, bin_widths, bin_heights] = PlotData._create_binning(
+					finite_dirac_deltas, 0, false
+				);
+
+				const ttr: Array<DiracDelta> = PlotData._bin_pdf_to_ttr(
+					boundary_positions, bin_widths, bin_heights, this.plotting_ttr_order
+				);
+
+				[boundary_positions, bin_widths, bin_heights] = PlotData._create_binning(
+					ttr, this.plotting_ttr_order, true
+				);
+
+				this.positions = boundary_positions;
+				this.masses = bin_heights;
+
+				return;
+			} catch (error) {
+				if (!(error instanceof EvalError || error instanceof TypeError)) {
+					throw error;
+				}
+			}
 		}
 
-		/*
-		 * Create the binning such that the average of two bins surrounding a Dirac delta
-		 * is the Dirac delta itself.
-		 */
-		let [boundary_positions, bin_widths, bin_heights] = PlotData._create_binning(
-			finite_dirac_deltas, 0, false
-		);
-
-		/*
-		 * Find the TTR of the created binning. This is always a valid TTR.
-		 */
-		const ttr: Array<DiracDelta> = PlotData._bin_pdf_to_ttr(
-			boundary_positions, bin_widths, bin_heights, this.plotting_ttr_order
-		);
-
-		/*
-		 * Create the binning from the obtained (valid) TTR using the TTR binning method.
-		 */
-		[boundary_positions, bin_widths, bin_heights] = PlotData._create_binning(
-			ttr, this.plotting_ttr_order, true
+		/* TTR binning on deltas that are not a valid TTR gives meaningless boundaries. */
+		const positions: Array<number> = finite_dirac_deltas.map(dd => dd.position);
+		const masses: Array<number> = finite_dirac_deltas.map(dd => dd.mass);
+		const [boundary_positions, bin_heights] = PlotData._uniform_histogram(
+			positions,
+			masses,
+			positions[0],
+			positions[positions.length - 1],
+			this.plotting_resolution
 		);
 
 		this.positions = boundary_positions;
@@ -655,3 +879,5 @@ class PlotData {
 export {
 	PlotData,
 };
+
+export type { PlottingResolution };
