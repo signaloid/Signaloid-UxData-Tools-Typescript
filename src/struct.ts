@@ -1,23 +1,23 @@
 /*
- *   Copyright(c) 2025, Signaloid.
+ *	Copyright (c) 2025, Signaloid.
  *
- *   Permission is hereby granted, free of charge, to any person obtaining a copy
- *   of this software and associated documentation files (the "Software"), to
- *   deal in the Software without restriction, including without limitation the
- *   rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- *   sell copies of the Software, and to permit persons to whom the Software is
- *   furnished to do so, subject to the following conditions:
+ *	Permission is hereby granted, free of charge, to any person obtaining a copy
+ *	of this software and associated documentation files (the "Software"), to deal
+ *	in the Software without restriction, including without limitation the rights
+ *	to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ *	copies of the Software, and to permit persons to whom the Software is
+ *	furnished to do so, subject to the following conditions:
  *
- *   The above copyright notice and this permission notice shall be included in
- *   all copies or substantial portions of the Software.
+ *	The above copyright notice and this permission notice shall be included in all
+ *	copies or substantial portions of the Software.
  *
- *   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- *   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- *   DEALINGS IN THE SOFTWARE.
+ *	THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ *	IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ *	FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *	AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ *	LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ *	OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ *	SOFTWARE.
  */
 
 
@@ -118,7 +118,6 @@ function pack(format: string, arr: Array<null | number | bigint>): null | Array<
 	const groups: Array<RegExpMatchArray> = [...format.matchAll(pattern)];
 
 	if (!groups.length) {
-		console.warn("Format unreadable.");
 		return null;
 	}
 
@@ -126,7 +125,6 @@ function pack(format: string, arr: Array<null | number | bigint>): null | Array<
 	let arrIndex: number = 0;
 	for (const g of groups) {
 		if (g.groups === undefined) {
-			console.warn("Format matching error.");
 			return [];
 		}
 
@@ -187,7 +185,6 @@ function unpack(format: string, buffer: Array<number>): null | Array<number | bi
 	const groups: Array<RegExpMatchArray> = [...format.matchAll(pattern)];
 
 	if (!groups.length) {
-		console.warn("Format unreadable.");
 		return null;
 	}
 
@@ -195,7 +192,6 @@ function unpack(format: string, buffer: Array<number>): null | Array<number | bi
 	let bufferIndex: number = 0;
 	for (const g of groups) {
 		if (g.groups === undefined) {
-			console.warn("Format matching error.");
 			return [];
 		}
 
@@ -205,7 +201,6 @@ function unpack(format: string, buffer: Array<number>): null | Array<number | bi
 		const getType = dataViewGetTypeDict[g.groups['type']];
 		for (let i = 0; i < count; i++) {
 			if (bufferIndex + value_size > buffer.length) {
-				console.warn("Format string does not match the given buffer.");
 				return null;
 			}
 
@@ -227,7 +222,6 @@ function unpack(format: string, buffer: Array<number>): null | Array<number | bi
 	}
 
 	if (bufferIndex !== buffer.length) {
-		console.warn("Format string does not match the given buffer.");
 		return null;
 	}
 
