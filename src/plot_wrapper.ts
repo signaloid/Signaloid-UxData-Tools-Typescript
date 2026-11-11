@@ -1,23 +1,23 @@
 /*
- *   Copyright(c) 2025, Signaloid.
+ *	Copyright (c) 2025, Signaloid.
  *
- *   Permission is hereby granted, free of charge, to any person obtaining a copy
- *   of this software and associated documentation files (the "Software"), to
- *   deal in the Software without restriction, including without limitation the
- *   rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- *   sell copies of the Software, and to permit persons to whom the Software is
- *   furnished to do so, subject to the following conditions:
+ *	Permission is hereby granted, free of charge, to any person obtaining a copy
+ *	of this software and associated documentation files (the "Software"), to deal
+ *	in the Software without restriction, including without limitation the rights
+ *	to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ *	copies of the Software, and to permit persons to whom the Software is
+ *	furnished to do so, subject to the following conditions:
  *
- *   The above copyright notice and this permission notice shall be included in
- *   all copies or substantial portions of the Software.
+ *	The above copyright notice and this permission notice shall be included in all
+ *	copies or substantial portions of the Software.
  *
- *   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- *   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- *   DEALINGS IN THE SOFTWARE.
+ *	THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ *	IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ *	FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *	AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ *	LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ *	OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ *	SOFTWARE.
  */
 
 
@@ -35,12 +35,14 @@ const kMeanColor = "rgb(0, 100, 0)";
 const kMeanLabel = "E(X)";
 const kYAxisHeadroom = 1.1;
 const kXAxisRangePadding = 0.05;
-/* signaloid-python's shared-xlim quantiles: Monte Carlo tails must not stretch a shared domain. */
+/* Quantiles that bound a shared x range, so that Monte Carlo tails do not stretch it. */
 const kRangeLowerQuantile = 0.005;
 const kRangeUpperQuantile = 0.995;
 const kXAxisName = "Distribution Support";
 const kYAxisName = "Probability Density";
 const kSpecialValuesYAxisName = "Probability Amplitude";
+/* matplotlib's `Locator.nonsingular` widening of equal limits. */
+const kNonsingularExpander = 0.05;
 
 const kSupportFrame = { color: kBlack, width: 2 };
 const kDensityFrame = { color: "rgba(0, 0, 0, 0.35)", width: 1 };
@@ -53,11 +55,20 @@ const kSpecialValuesWidth = "16%";
 /** Width to height, matching the plots the backend serves. */
 const distributionPlotAspectRatio = 1.69;
 
+/**
+ * Per-plot options of `signaloidChartOption` and `signaloidChartMount`. The
+ * ones signaloid-data-toolkit's `plot()` also has keep its defaults.
+ */
 type SignaloidChartOptions = {
+	/** The x axis name, `x_label` in signaloid-data-toolkit. Empty gives the default. */
 	xAxisName?: string;
+	/** The y axis name. Empty gives the default. */
 	yAxisName?: string;
+	/** The x range. Without it, the support and the mean set it. */
 	xlim?: [number, number];
+	/** The y range. Without it, the maximum density sets it. */
 	ylim?: [number, number];
+	/** The power of 10 the y tick labels are divided by. 0 draws no header. */
 	offsetExponent?: number;
 };
 
@@ -77,8 +88,10 @@ function binRenderer(_: any, api: any) {
 	const boundaryPosition = api.value(0);
 	const boundaryPositionN = api.value(1);
 	const binHeight = api.value(2);
-	let start = api.coord([boundaryPosition, binHeight]);
-	let size = api.size([boundaryPositionN - boundaryPosition, binHeight]);
+
+	/* Opposite corners, so that a reversed `xlim` or `ylim` draws the bin too. */
+	const corner = api.coord([boundaryPosition, 0]);
+	const oppositeCorner = api.coord([boundaryPositionN, binHeight]);
 
 	/*
 	 * Bin styling
@@ -90,10 +103,10 @@ function binRenderer(_: any, api: any) {
 	return {
 		type: "rect",
 		shape: {
-			x: start[0],
-			y: start[1],
-			width: size[0],
-			height: size[1],
+			x: Math.min(corner[0], oppositeCorner[0]),
+			y: Math.min(corner[1], oppositeCorner[1]),
+			width: Math.abs(oppositeCorner[0] - corner[0]),
+			height: Math.abs(oppositeCorner[1] - corner[1]),
 		},
 		style: style,
 	};
@@ -125,6 +138,9 @@ function diracDeltaArrowRenderer(_: any, api: any) {
 	const diracDeltaPosition = api.value(0);
 	const position = api.coord([diracDeltaPosition, api.value(1)]);
 
+	/* Point away from the baseline, which a reversed `ylim` puts above the tip. */
+	const direction: number = api.coord([diracDeltaPosition, 0])[1] >= position[1] ? 1 : -1;
+
 	return {
 		type: "polygon",
 		x: position[0],
@@ -132,8 +148,8 @@ function diracDeltaArrowRenderer(_: any, api: any) {
 		shape: {
 			points: [
 				[0, 0],
-				[-6, 10],
-				[6, 10],
+				[-6, 10 * direction],
+				[6, 10 * direction],
 			],
 		},
 		style: diracDeltaStyle_default(),
@@ -174,9 +190,40 @@ const numericAxisLabel_default = (exponent: number = 0) => ({
 	formatter: plainLabel(exponent),
 });
 
-/** The y axis maximum `signaloidChartOption` derives, headroom included. */
+/**
+ * The y axis maximum `signaloidChartOption` derives, headroom included. A value
+ * with no finite Dirac delta keeps matplotlib's empty [0, 1] axis.
+ */
 function densityAxisMaximum(plot_data: PlotData): number {
+	if (plot_data.masses.length === 0) {
+		return 1;
+	}
+
 	return plot_data.max_value > 0 ? plot_data.max_value * kYAxisHeadroom : kYAxisHeadroom;
+}
+
+/**
+ * The limits an axis is set to, checked and widened as matplotlib's
+ * `set_xlim` and `set_ylim` do. Equal limits `v` become `v -/+ 0.05 * |v|`,
+ * or -0.05 and 0.05 at 0.
+ *
+ * @param limits The lower and upper limit.
+ *
+ * @returns The limits, widened when they are equal.
+ *
+ * @throws EvalError: When a limit is NaN or +/-Inf.
+ */
+function axisLimits(limits: [number, number]): [number, number] {
+	if (!Number.isFinite(limits[0]) || !Number.isFinite(limits[1])) {
+		throw EvalError("Axis limits cannot be NaN or Inf");
+	}
+	if (limits[0] !== limits[1]) {
+		return limits;
+	}
+
+	const widening: number = kNonsingularExpander * (limits[0] === 0 ? 1 : Math.abs(limits[0]));
+
+	return [limits[0] - widening, limits[1] + widening];
 }
 
 /**
@@ -184,8 +231,9 @@ function densityAxisMaximum(plot_data: PlotData): number {
  * `signaloidChartOption`'s chart options. The x range is the union of each
  * input's trimmed support, padded 5% each side. An input whose trimmed support
  * is not finite contributes nothing, and with no finite support at all `xlim`
- * is omitted. signaloid-python's `_compute_shared_xlim` trims only adversary
- * distributions and gives the rest their full support, whereas this trims
+ * is omitted. This has no counterpart in signaloid-data-toolkit: it began as
+ * a port of the benchmarking module's `_compute_shared_xlim`, which has since
+ * been removed. That trimmed only adversary distributions, whereas this trims
  * every input because this API has no adversary concept.
  *
  * @param plot_datas The plots that should share their axes.
@@ -243,6 +291,46 @@ function plainLabel(exponent: number) {
 	return (value: number) => String(Number((value / scale).toPrecision(6)));
 }
 
+/*
+ * An x tick label in full. Rounding at the 15th significant digit of the axis
+ * magnitude drops the float error of ECharts' ticks, and the decimal string
+ * carries the power of ten, which `toFixed` cannot from 1e21.
+ */
+function fullLabel(limits: [number, number]) {
+	/* Never 0, as `axisLimits` widens equal limits. */
+	const magnitude: number = Math.max(Math.abs(limits[0]), Math.abs(limits[1]));
+	/* 10 ** 308 is the largest finite power of ten. */
+	const unit_oom: number = Math.max(Math.floor(Math.log10(magnitude)) - 14, -308);
+
+	return (value: number) => {
+		/* Divides or multiplies by an exact power of ten. */
+		const units: number = unit_oom >= 0
+			? Math.round(value / 10 ** unit_oom)
+			: Math.round(value * 10 ** -unit_oom);
+
+		/* `${-0}` is "0". */
+		return String(Number(`${units}e${unit_oom}`));
+	};
+}
+
+/**
+ * The ECharts bounds of an axis drawn from `limits[0]` to `limits[1]`. ECharts
+ * takes ascending bounds and reverses an axis with `inverse`, so a descending
+ * pair, as matplotlib's `set_xlim(10, 0)` takes it, becomes ascending bounds
+ * on an inverted axis.
+ *
+ * @param limits The limits, in the order the axis should run.
+ *
+ * @returns The `min`, `max`, and `inverse` axis options.
+ */
+function axisBounds(limits: [number, number]): { min: number, max: number, inverse: boolean } {
+	return {
+		min: Math.min(limits[0], limits[1]),
+		max: Math.max(limits[0], limits[1]),
+		inverse: limits[0] > limits[1],
+	};
+}
+
 function mirroredAxis(axis: any, position: string) {
 	return {
 		type: axis.type,
@@ -251,6 +339,7 @@ function mirroredAxis(axis: any, position: string) {
 		position: position,
 		min: axis.min,
 		max: axis.max,
+		inverse: axis.inverse,
 		axisLine: axis.axisLine,
 		axisTick: axis.axisTick,
 		minorTick: axis.minorTick,
@@ -281,6 +370,8 @@ const distributionYAxis_default = (
 
 const meanMarkLine_default = () => ({
 	symbol: "none",
+	/* ECharts otherwise rounds the line's position to 2 decimals, as matplotlib's `axvline` does not. */
+	precision: -1,
 	data: [
 		{
 			name: kMeanLabel,
@@ -370,20 +461,24 @@ const distributionPlotSeries_bin_default = () => ([
 	},
 ]);
 
-const distributionXAxis_default = (name: string = kXAxisName): echarts.XAXisComponentOption => ({
+const distributionXAxis_default = (
+	limits: [number, number],
+	name: string = kXAxisName
+): echarts.XAXisComponentOption => ({
 	type: "value",
-	alignTicks: true,
 	position: "bottom",
 	gridIndex: 0,
 	name: name,
 	nameLocation: "middle",
 	nameTextStyle: axisNameTextStyle_default(),
 	nameGap: kAxisNameGap.x,
+	...axisBounds(limits),
 	...frame_default(kSupportFrame),
 	splitLine: splitLine_default(),
 	axisLabel: {
 		...numericAxisLabel_default(),
 		showMinLabel: false,
+		formatter: fullLabel(limits),
 	},
 });
 
@@ -416,7 +511,6 @@ const distributionPlotSeries_specialValues_default = () => ({
 const distributionYAxis_specialValues_default = () => ({
 	...distributionYAxis_default(1, kSpecialValuesYAxisName),
 	gridIndex: 1,
-	alignTicks: true,
 	nameGap: kAxisNameGap.specialValuesY,
 });
 
@@ -463,11 +557,16 @@ const yAxisOffsetHeader_default = (exponent: number) => ({
 });
 
 /**
- *  Generates the ECharts option for a given Ux value.
+ * Generates the ECharts option for a given Ux value, as
+ * signaloid-data-toolkit's `plot()` draws it.
  *
- *  @param plot_data: Plot data of the Ux value to plot.
- *  @param chart_options: Per-plot text, i.e. the axis names.
- *  @returns ECharts option.
+ * @param plot_data Plot data of the Ux value to plot.
+ * @param chart_options Per-plot options. See `SignaloidChartOptions`.
+ *
+ * @returns ECharts option.
+ *
+ * @throws EvalError: When a bound of `xlim` or `ylim`, or of the limits
+ * derived in their place, is NaN or +/-Inf.
  */
 function signaloidChartOption(
 	plot_data: PlotData,
@@ -508,20 +607,24 @@ function signaloidChartOption(
 		delete meanSeries.markLine;
 	}
 
-	const yAxisMax: number = chart_options.ylim
-		? chart_options.ylim[1]
-		: densityAxisMaximum(plot_data);
-	const exponent: number = chart_options.offsetExponent ?? offsetExponent(yAxisMax);
+	const y_bounds = axisBounds(axisLimits(chart_options.ylim ?? [0, densityAxisMaximum(plot_data)]));
+	const exponent: number = chart_options.offsetExponent ?? offsetExponent(y_bounds.max);
 
-	const distributionYAxis = distributionYAxis_default(
-		yAxisMax,
-		chart_options.yAxisName,
-		chart_options.ylim ? chart_options.ylim[0] : 0,
-		exponent
-	);
-	const distributionXAxis = distributionXAxis_default(chart_options.xAxisName);
+	const distributionYAxis = {
+		...distributionYAxis_default(
+			y_bounds.max,
+			chart_options.yAxisName || kYAxisName,
+			y_bounds.min,
+			exponent
+		),
+		inverse: y_bounds.inverse,
+	};
+
+	/* matplotlib's limits for an axis with nothing drawn on it. */
+	let x_limits: [number, number] = [0, 1];
 	if (chart_options.xlim) {
-		[distributionXAxis.min, distributionXAxis.max] = chart_options.xlim;
+		/* Even with no finite Dirac delta, so that paired plots keep one scale. */
+		x_limits = chart_options.xlim;
 	} else if (plot_data.positions.length > 0) {
 		const min_x: number = has_finite_mean
 			? Math.min(mean as number, plot_data.min_range)
@@ -531,9 +634,13 @@ function signaloidChartOption(
 			: plot_data.max_range;
 		const range_spacing: number = kXAxisRangePadding * (max_x - min_x);
 
-		distributionXAxis.min = min_x - range_spacing;
-		distributionXAxis.max = max_x + range_spacing;
+		x_limits = [min_x - range_spacing, max_x + range_spacing];
 	}
+	/* signaloid-data-toolkit's `x_label if x_label else "Distribution Support"`. */
+	const distributionXAxis = distributionXAxis_default(
+		axisLimits(x_limits),
+		chart_options.xAxisName || kXAxisName
+	);
 
 	const xAxis: Array<any> = [distributionXAxis];
 	const yAxis: Array<any> = [distributionYAxis];
@@ -570,11 +677,15 @@ function signaloidChartOption(
 }
 
 /**
- *  Mounts the ECharts instance on a given DOM element, and makes it resizeable.
+ * Mounts the ECharts instance on a given DOM element, and makes it resizeable.
  *
- *  @param chartDom: DOM element to mount the ECharts instance on.
- *  @param plot_data: Plot data of the Ux value to plot.
- *  @param chart_options: Per-plot text, i.e. the axis names.
+ * @param chartDom DOM element to mount the ECharts instance on.
+ * @param plot_data Plot data of the Ux value to plot.
+ * @param chart_options Per-plot options, as `signaloidChartOption` takes them.
+ *
+ * @returns The ECharts instance.
+ *
+ * @throws EvalError: As `signaloidChartOption` does.
  */
 function signaloidChartMount(
 	chartDom: any,

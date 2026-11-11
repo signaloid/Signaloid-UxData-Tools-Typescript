@@ -1,34 +1,34 @@
 /*
- *   Copyright(c) 2025, Signaloid.
+ *	Copyright (c) 2025, Signaloid.
  *
- *   Permission is hereby granted, free of charge, to any person obtaining a copy
- *   of this software and associated documentation files (the "Software"), to
- *   deal in the Software without restriction, including without limitation the
- *   rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- *   sell copies of the Software, and to permit persons to whom the Software is
- *   furnished to do so, subject to the following conditions:
+ *	Permission is hereby granted, free of charge, to any person obtaining a copy
+ *	of this software and associated documentation files (the "Software"), to deal
+ *	in the Software without restriction, including without limitation the rights
+ *	to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ *	copies of the Software, and to permit persons to whom the Software is
+ *	furnished to do so, subject to the following conditions:
  *
- *   The above copyright notice and this permission notice shall be included in
- *   all copies or substantial portions of the Software.
+ *	The above copyright notice and this permission notice shall be included in all
+ *	copies or substantial portions of the Software.
  *
- *   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- *   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- *   DEALINGS IN THE SOFTWARE.
+ *	THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ *	IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ *	FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *	AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ *	LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ *	OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ *	SOFTWARE.
  */
 
 
 import * as struct from './struct';
 
 import { DiracDelta } from './dirac_delta';
+import { pairwise_sum } from './summation';
 
 
 function bytes_tohex(arr: null | Array<number>): string {
 	if (arr === null) {
-		console.warn("Empty array.");
 		return '';
 	}
 
@@ -60,7 +60,6 @@ function bytes_fromhex(str: string): Array<number> {
 			!HEX_DIGITS.includes(pair[0]) ||
 			!HEX_DIGITS.includes(pair[1])
 		) {
-			console.warn("Not a byte-addressable hex string.");
 			return [];
 		}
 
@@ -135,12 +134,32 @@ function float_fromstring(text: string): null | number {
 }
 
 
-type ObjectValues<T> = T[keyof T];
+/*
+ * Representation type byte, as carried at offset 11 of the Ux Binary layout.
+ * 0x00 is not a core: it is the "not stated" value, for a value assembled in
+ * TypeScript rather than read off a core (raw samples, for one). Keeping it as
+ * the constructor default matters because `TTR_NATIVE_UR_TYPES` below makes
+ * the byte decide how a value is binned, and defaulting to a real core would
+ * silently claim a provenance the value does not have.
+ */
+const UR_TYPE_UNSPECIFIED: number = 0x00;
+const UR_TYPE_ATHENS: number = 0x04;
+const UR_TYPE_JUPITER: number = 0x06;
+const UR_TYPE_ROME: number = 0x07;
 
-const UxRepresentationTypeE = {
-	Athens: 0x04,
-} as const;
-type UxRepresentationType = ObjectValues<typeof UxRepresentationTypeE>;
+/*
+ * Cores whose Dirac deltas are a TTR by construction. Their values are binned
+ * by the TTR route even when `check_is_full_valid_TTR` says otherwise: curing
+ * and zero-mass dropping routinely leave such a value with a non-power-of-2
+ * Dirac count, which fails the check without making the value any less
+ * TTR-shaped.
+ *
+ * Every other type is left to `check_is_full_valid_TTR` to route: the TTR
+ * binning when the value does happen to be a valid TTR, the non-uniform
+ * binning when it does not. That covers `UR_TYPE_UNSPECIFIED` and Jupiter,
+ * whose Dirac deltas are particles rather than a TTR.
+ */
+const TTR_NATIVE_UR_TYPES: ReadonlySet<number> = new Set([UR_TYPE_ATHENS, UR_TYPE_ROME]);
 
 
 /*
@@ -175,6 +194,13 @@ const STRUCT_FORMATS: { [id: string]: { [id: string]: string }; } = {
  */
 const UX_BINARY_FORMAT_MARKER = 0xF0;
 
+/*
+ * The largest values of the unsigned integer fields `export` packs, which
+ * `struct.pack` range-checks.
+ */
+const UINT8_MAX: bigint = 0xFFn;
+const UINT64_MAX: bigint = 0xFFFFFFFFFFFFFFFFn;
+
 
 /* `a - b` is inconsistent on NaN and leaves the array unsorted; `np.sort` puts NaN last. */
 function ascending_nan_last(a: number, b: number): number {
@@ -190,9 +216,29 @@ function ascending_nan_last(a: number, b: number): number {
 }
 
 
+/**
+ * Checks that `value` fits an unsigned integer field of `struct.pack`, which
+ * raises where a `DataView` setter would wrap the value silently.
+ *
+ * @param value The value to pack.
+ * @param format The `struct` format string of the field.
+ * @param maximum The largest value the field holds.
+ *
+ * @throws RangeError: When `value` is not an integer in [0, `maximum`], as
+ * `struct.pack` raises `struct.error`.
+ */
+function check_unsigned_field(value: number | bigint, format: string, maximum: bigint): void {
+	/* `BigInt` throws a RangeError of its own for a number that is not an integer. */
+	const integer: bigint = BigInt(value);
+	if (integer < 0n || integer > maximum) {
+		throw RangeError(`'${format.slice(-1)}' format requires 0 <= number <= ${maximum}`);
+	}
+}
+
+
 class DistributionalValue {
 	particle_value: null | number = null;
-	UR_type: null | number = null;
+	UR_type: number = UR_TYPE_UNSPECIFIED;
 	private _dirac_deltas: Array<DiracDelta> = [];
 	double_precision: boolean = true;
 	/*
@@ -211,22 +257,31 @@ class DistributionalValue {
 	private _is_cured: null | boolean = null;
 	private _is_full_valid_TTR: null | boolean = null;
 
+	/**
+	 * @param particle_value The particle value. Absent when not given or `null`.
+	 * @param UR_type The representation type byte. `UR_TYPE_UNSPECIFIED` when
+	 * not given.
+	 * @param dirac_deltas The Dirac deltas. Empty when not given or `null`.
+	 * @param double_precision Whether the support positions export as doubles,
+	 * rather than as single-precision floats.
+	 */
 	constructor(
 		{
 			particle_value = null,
-			UR_type = UxRepresentationTypeE.Athens,
-			dirac_deltas = [],
+			UR_type = UR_TYPE_UNSPECIFIED,
+			dirac_deltas = null,
 			double_precision = true
 		}: {
 			particle_value?: null | number,
-			UR_type?: UxRepresentationType,
-			dirac_deltas?: Array<DiracDelta>,
+			UR_type?: number,
+			dirac_deltas?: null | Array<DiracDelta>,
 			double_precision?: boolean
-		}
+		} = {}
 	) {
 		this.particle_value = particle_value;
 		this.UR_type = UR_type;
-		this._dirac_deltas = dirac_deltas;
+		/* `??` treats `null` as absent, as Python's `is not None` does. */
+		this._dirac_deltas = dirac_deltas ?? [];
 		this.double_precision = double_precision;
 	}
 
@@ -239,11 +294,16 @@ class DistributionalValue {
 	 *
 	 * @returns The constructed `DistributionalValue`.
 	 *
-	 * @throws EvalError: When the samples array is empty.
+	 * @throws EvalError: When the samples array is empty, or holds a value that
+	 * is not a number.
 	 */
 	static from_samples(samples: ArrayLike<number>): DistributionalValue {
 		if (samples.length === 0) {
 			throw EvalError("samples array must not be empty.");
+		}
+
+		if (!Array.from(samples).every(sample => typeof sample === "number")) {
+			throw EvalError("samples contain non numerical values");
 		}
 
 		const mass_per_sample: number = 1 / samples.length;
@@ -264,8 +324,9 @@ class DistributionalValue {
 	 *
 	 * @returns The constructed `DistributionalValue`.
 	 *
-	 * @throws EvalError: When the inputs are empty, of differing lengths, carry
-	 * a negative mass, or do not have a finite and non-zero total mass.
+	 * @throws EvalError: When the inputs are empty, of differing lengths, hold
+	 * an entry that is not a number, carry a negative mass, or do not have a
+	 * finite and non-zero total mass.
 	 */
 	static from_weighted_samples(
 		positions: ArrayLike<number>,
@@ -283,15 +344,24 @@ class DistributionalValue {
 			throw EvalError("positions and masses have differing lengths");
 		}
 
-		let total_mass: number = 0;
+		if (!Array.from(positions).every(position => typeof position === "number")) {
+			throw EvalError("positions contain non numerical values");
+		}
+
+		/* An array, so that input without a length sums to 0 and is rejected, as on main. */
+		const mass_values: Array<number> = Array.from(masses);
+		if (!mass_values.every(mass => typeof mass === "number")) {
+			throw EvalError("masses contain non numerical values");
+		}
+
 		for (let i = 0; i < masses.length; i++) {
 			if (masses[i] < 0) {
 				throw EvalError(`masses must be non-negative (got ${masses[i]})`);
 			}
-
-			total_mass += masses[i];
 		}
 
+		/* `np.sum` sums pairwise, which rounds differently from a running sum. */
+		const total_mass: number = pairwise_sum(mass_values);
 		if (!Number.isFinite(total_mass) || total_mass === 0) {
 			throw EvalError(
 				`sum of masses must be finite and non-zero (got ${total_mass})`
@@ -327,7 +397,7 @@ class DistributionalValue {
 		this.sort();
 
 		/* Not `slice(0, -3)`: a dropped zero-mass slot would shorten the tail. */
-		return this.dirac_deltas.filter(dd => dd.isFinite());
+		return this.dirac_deltas.filter(dd => dd.isFinite);
 	}
 
 	/**
@@ -436,8 +506,49 @@ class DistributionalValue {
 		];
 	}
 
+	/* `masses.sum()`: numpy sums pairwise, which rounds differently from a running sum. */
 	private _total_mass(): number {
-		return this.masses.reduce((total, mass) => total + mass, 0);
+		return pairwise_sum(this.masses);
+	}
+
+	/**
+	 * The range of the support: the largest positive-mass position minus the
+	 * smallest. Like Python's, it calls `sort()` first, which moves any
+	 * non-finite Dirac delta into the special-value slots.
+	 *
+	 * @returns 0.0 for a single Dirac delta. NaN when a NaN-position Dirac
+	 * delta has positive mass, +Inf when a +/-Inf-position one does, and NaN
+	 * for an empty or all-zero-mass value.
+	 */
+	get range(): number {
+		this.sort();
+
+		if (this.nan_dirac_delta.mass > 0) {
+			return Number.NaN;
+		}
+
+		if (this.neg_inf_dirac_delta.mass > 0 || this.pos_inf_dirac_delta.mass > 0) {
+			return Number.POSITIVE_INFINITY;
+		}
+
+		/*
+		 * After the special-value returns, only finite Dirac deltas remain. Drop
+		 * the zero-mass ones so that they cannot widen the support.
+		 */
+		const [positions] = this._positive_mass_support();
+		if (positions.length === 0) {
+			return Number.NaN;
+		}
+
+		/* A loop, not `Math.max(...positions)`, which overflows the stack on a long support. */
+		let minimum: number = positions[0];
+		let maximum: number = positions[0];
+		for (const position of positions) {
+			minimum = Math.min(minimum, position);
+			maximum = Math.max(maximum, position);
+		}
+
+		return maximum - minimum;
 	}
 
 	/**
@@ -479,6 +590,15 @@ class DistributionalValue {
 		}
 
 		return positions[positions.length - 1];
+	}
+
+	/**
+	 * The median position, which is shorthand for `quantile(0.5)`.
+	 *
+	 * @returns The median position.
+	 */
+	get median(): number {
+		return this.quantile(0.5);
 	}
 
 	/**
@@ -603,6 +723,104 @@ class DistributionalValue {
 	}
 
 	/**
+	 * The `order`-th raw moment, the sum of `p_i * x_i ** order` over the
+	 * positive-mass Dirac deltas, normalized by their total mass. Like
+	 * Python's, it calls `sort()` unless `order` is 0.
+	 *
+	 * @param order The moment order.
+	 *
+	 * @returns 1.0 for `order` 0 on a value with non-zero total mass. NaN when
+	 * a NaN-position Dirac delta has positive mass. +Inf when only +Inf-position
+	 * mass is present. For only -Inf-position mass, +Inf for an even `order`
+	 * and -Inf for an odd one. For both, +Inf for an even `order` and NaN for an
+	 * odd one. NaN for an empty or all-zero-mass value.
+	 */
+	public raw_moments(order: number): number {
+		if (this._total_mass() === 0.0) {
+			return Number.NaN;
+		}
+
+		if (order === 0) {
+			return 1.0;
+		}
+
+		this.sort();
+
+		if (this.nan_dirac_delta.mass > 0) {
+			return Number.NaN;
+		}
+
+		const has_neg_inf: boolean = this.neg_inf_dirac_delta.mass > 0;
+		const has_pos_inf: boolean = this.pos_inf_dirac_delta.mass > 0;
+		/* `%` keeps the sign in JavaScript, but `-3 % 2` is still non-zero, as Python's parity test needs. */
+		const is_even_order: boolean = order % 2 === 0;
+
+		if (has_neg_inf && has_pos_inf) {
+			return is_even_order ? Number.POSITIVE_INFINITY : Number.NaN;
+		}
+
+		if (has_pos_inf) {
+			return Number.POSITIVE_INFINITY;
+		}
+
+		if (has_neg_inf) {
+			return is_even_order ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+		}
+
+		const [positions, masses] = this._positive_mass_support();
+		const total_mass: number = pairwise_sum(masses);
+		if (total_mass === 0.0) {
+			return Number.NaN;
+		}
+
+		return pairwise_sum(masses.map((mass, i) => mass * positions[i] ** order)) / total_mass;
+	}
+
+	/**
+	 * The `order`-th central moment, the sum of `p_i * (x_i - mean) ** order`
+	 * over the positive-mass Dirac deltas, normalized by their total mass. The
+	 * mean is that of the positive-mass Dirac deltas, summed as numpy sums it,
+	 * not `this.mean`. Like Python's, it calls `sort()` unless `order` is 0.
+	 *
+	 * @param order The moment order.
+	 *
+	 * @returns 1.0 for `order` 0 on a value with non-zero total mass, even when
+	 * the mean is not finite. NaN when a NaN- or +/-Inf-position Dirac delta has
+	 * positive mass, and for an empty or all-zero-mass value.
+	 */
+	public central_moments(order: number): number {
+		if (this._total_mass() === 0.0) {
+			return Number.NaN;
+		}
+
+		if (order === 0) {
+			return 1.0;
+		}
+
+		this.sort();
+
+		if (
+			this.nan_dirac_delta.mass > 0
+			|| this.neg_inf_dirac_delta.mass > 0
+			|| this.pos_inf_dirac_delta.mass > 0
+		) {
+			return Number.NaN;
+		}
+
+		const [positions, masses] = this._positive_mass_support();
+		const total_mass: number = pairwise_sum(masses);
+		if (total_mass === 0.0) {
+			return Number.NaN;
+		}
+
+		const mean: number = pairwise_sum(masses.map((mass, i) => mass * positions[i])) / total_mass;
+
+		return pairwise_sum(
+			masses.map((mass, i) => mass * (positions[i] - mean) ** order)
+		) / total_mass;
+	}
+
+	/**
 	 * The number of non-zero mass Dirac Deltas.
 	 *
 	 * @returns The number of non-zero mass Dirac Deltas.
@@ -680,6 +898,8 @@ class DistributionalValue {
 	 * Constructs the Ux string with particle value for the`DistributionalValue`.
 	 *
 	 * @returns: UxString: The Ux string with particle value for the`DistributionalValue`.
+	 *
+	 * @throws RangeError: As `export` does.
 	 */
 	public toString = (): string => {
 		const result = this.export(true);
@@ -691,6 +911,8 @@ class DistributionalValue {
 	 * Uses either single or double precision for support positions based on this.double_precision.
 	 *
 	 * @returns: The byte array for the `DistributionalValue`.
+	 *
+	 * @throws RangeError: As `export` does.
 	 */
 	public toBytes = (): Array<number> => {
 		const result = this.export(false);
@@ -705,6 +927,10 @@ class DistributionalValue {
 	 * 		- False: Export a Ux bytes
 	 *
 	 * @returns: The Ux string or the Ux bytes with particle value for the `DistributionalValue`.
+	 *
+	 * @throws RangeError: When `UR_type` is not an integer in [0, 255], or a
+	 * Dirac delta's raw mass does not fit in 64 bits (a mass of 2.0 or more), as
+	 * Python's `struct.pack` raises `struct.error` rather than wrap the value.
 	 *
 	 * Ux String format specification:
 	 * 	- Particle value (double in string format)
@@ -747,9 +973,13 @@ class DistributionalValue {
 	 */
 	public export = (to_str: boolean = true): string | Array<number> => {
 		/*
-		 * Create byte representation
+		 * Create byte representation. Appended to in place: `concat` copies
+		 * the whole buffer each time, which is quadratic in the Dirac count.
 		 */
-		let buffer: Array<number> = [];
+		const buffer: Array<number> = [];
+		const append = (bytes: null | Array<number>): void => {
+			buffer.push(...(bytes || []));
+		};
 		let UxString: string = "";
 
 		const fmt = STRUCT_FORMATS[to_str ? "str" : "bytes"];
@@ -765,7 +995,7 @@ class DistributionalValue {
 			 * Particle value (double)                           (8 bytes)
 			 */
 			const particle_value = this.particle_value !== null ? this.particle_value : 0;
-			buffer = buffer.concat(struct.pack(fmt["particle"], [particle_value]) || []);
+			append(struct.pack(fmt["particle"], [particle_value]));
 
 			/*
 			 * Ux Binary Data format specifies:
@@ -774,30 +1004,35 @@ class DistributionalValue {
 			 * These are inserted between the particle value and the
 			 * representation type.
 			 */
-			buffer = buffer.concat([UX_BINARY_FORMAT_MARKER, 0x00, 0x00]);
+			append([UX_BINARY_FORMAT_MARKER, 0x00, 0x00]);
 		}
 
 		/*
 		 * Representation type (uint8_t)                     (1 byte)
+		 * Ux Binary Data always names a core, so an unspecified type is
+		 * written as Athens there. A Ux string carries the type as it is.
 		 */
-		//@ts-ignore
-		buffer = buffer.concat(struct.pack(fmt["UR_type"], [this.UR_type]) || []);
+		const UR_type: number = (
+			!to_str && this.UR_type === UR_TYPE_UNSPECIFIED ? UR_TYPE_ATHENS : this.UR_type
+		);
+		check_unsigned_field(UR_type, fmt["UR_type"], UINT8_MAX);
+		append(struct.pack(fmt["UR_type"], [UR_type]));
 
 		/*
 		 * Number of samples (uint64_t)                      (8 bytes)
 		 */
-		buffer = buffer.concat(struct.pack(fmt["sample_count"], [this.positions.length]) || []);
+		append(struct.pack(fmt["sample_count"], [this.UR_order]));
 
 		/*
 		 * Mean value of distribution (double)               (8 bytes)
 		 * Mean is always double precision regardless of this.double_precision
 		 */
-		buffer = buffer.concat(struct.pack(fmt["mean"], [this.mean]) || []);
+		append(struct.pack(fmt["mean"], [this.mean]));
 
 		/*
 		 * Number of non-zero mass Dirac deltas (uint32_t)   (4 bytes)
 		 */
-		buffer = buffer.concat(struct.pack(fmt["UR_order"], [this.UR_order]) || []);
+		append(struct.pack(fmt["UR_order"], [this.UR_order]));
 
 		/*
 		 * Choose the format based on double_precision flag
@@ -809,16 +1044,18 @@ class DistributionalValue {
 		 * - Support position (double or float)              (8 or 4 bytes)
 		 * - Probability mass (uint64_t)                     (8 bytes)
 		 */
-		for (const i in this.positions) {
+		for (const dd of this.dirac_deltas) {
 			/*
 			 * Pack the position using either double or float precision
 			 */
-			buffer = buffer.concat(struct.pack(position_format, [this.dirac_deltas[i].position]) || []);
+			append(struct.pack(position_format, [dd.position]));
 
 			/*
-			 * Probability mass is always uint64_t
+			 * Probability mass is always uint64_t. A mass of 2.0 or more does
+			 * not fit it.
 			 */
-			buffer = buffer.concat(struct.pack(fmt["mass"], [this.dirac_deltas[i].raw_mass]) || []);
+			check_unsigned_field(dd.raw_mass, fmt["mass"], UINT64_MAX);
+			append(struct.pack(fmt["mass"], [dd.raw_mass]));
 		}
 
 		if (to_str) {
@@ -839,6 +1076,9 @@ class DistributionalValue {
 	 * 				- null: retry single precision when the buffer is too short for double
 	 *
 	 * @returns The constructed `DistributionalValue` or null if parsing fails.
+	 * Never logs. Where signaloid-data-toolkit's `bytes.fromhex` raises a
+	 * ValueError, this returns null instead: for a bare string with no "Ux"
+	 * that is not valid hex, and for an odd number of hex digits after "Ux".
 	 *
 	 * Ux String format specification:
 	 * 	- Particle value (double in string format)
@@ -920,7 +1160,6 @@ class DistributionalValue {
 					const particle_value: null | number = float_fromstring(parts[index]);
 
 					if (particle_value === null) {
-						console.warn("Faulty Ux-string particle value:", parts[index]);
 						return null;
 					}
 
@@ -944,13 +1183,11 @@ class DistributionalValue {
 			 * to detect the layout (see below).
 			 */
 			if (buffer.length < 9) {
-				console.error(`Cannot parse distributional value. Buffer too small (${buffer.length} bytes)`);
 				return null;
 			}
 
 			const particle_value: null | number | bigint = read(fmt["particle"], 8);
 			if (particle_value === null) {
-				console.error("Cannot parse the particle value.");
 				return null;
 			}
 
@@ -964,7 +1201,6 @@ class DistributionalValue {
 				offset += 3;
 			}
 		} else {
-			console.error("Unsupported input.", typeof (dist));
 			return null;
 		}
 
@@ -974,7 +1210,6 @@ class DistributionalValue {
 		 */
 		const min_length: number = offset + 21;
 		if (buffer.length < min_length) {
-			console.warn("Input data do not include the mandatory fields.");
 			return null;
 		}
 
@@ -990,7 +1225,6 @@ class DistributionalValue {
 		const UR_order_raw: null | number | bigint = read(fmt["UR_order"], 4);
 
 		if (UR_type === null || mean === null || UR_order_raw === null) {
-			console.warn("Input data do not include the mandatory fields.");
 			return null;
 		}
 
@@ -1007,7 +1241,6 @@ class DistributionalValue {
 			UR_order < 0
 			|| UR_order > 10000
 		) {
-			console.warn("UR order out of normal bounds:", UR_order);
 			return null;
 		}
 
@@ -1019,7 +1252,6 @@ class DistributionalValue {
 		let expected_length: number = min_length + (UR_order * (bytes_per_position + 8));
 		if (buffer.length < expected_length) {
 			if (double_precision_is_known) {
-				console.warn("Not enough data to read for UR order of:", UR_order);
 				return null;
 			}
 
@@ -1027,7 +1259,6 @@ class DistributionalValue {
 			bytes_per_position = 4;
 			expected_length = min_length + (UR_order * (bytes_per_position + 8));
 			if (buffer.length < expected_length) {
-				console.warn("Not enough data to read for UR order of:", UR_order);
 				return null;
 			}
 		}
@@ -1041,7 +1272,6 @@ class DistributionalValue {
 			const raw_mass: null | number | bigint = read(fmt["mass"], 8);
 
 			if (position === null || raw_mass === null) {
-				console.warn("Cannot read the Dirac delta at index:", i);
 				return null;
 			}
 
@@ -1060,11 +1290,11 @@ class DistributionalValue {
 	 *
 	 * @param other The other `DistributionalValue`.
 	 *
-	 * @returns The distance between the mean values.
+	 * @returns The distance between the mean values. NaN when either mean is
+	 * `null`.
 	 */
 	public mean_distance = (other: DistributionalValue): number => {
 		if (this.mean === null || other.mean === null) {
-			console.warn(`No valid mean values. this.mean=${this.mean}, other.mean=${other.mean}`);
 			return Number.NaN;
 		}
 
@@ -1078,11 +1308,12 @@ class DistributionalValue {
 	 * @param other The other `DistributionalValue`.
 	 *
 	 * @returns The relative difference between the mean values (normalized
-	 * by the mean value of the other `DistributionalValue`).
+	 * by the mean value of the other `DistributionalValue`). NaN when either
+	 * mean is `null`, or the other mean is zero.
 	 */
 	public mean_relative_diff = (other: DistributionalValue): number => {
-		if (this.mean === null || other.mean === null) {
-			console.warn(`No valid mean values. this.mean=${this.mean}, other.mean=${other.mean}`);
+		/* `=== 0` also matches -0, as Python's `== 0` does. */
+		if (this.mean === null || other.mean === null || other.mean === 0) {
 			return Number.NaN;
 		}
 
@@ -1111,7 +1342,6 @@ class DistributionalValue {
 	 */
 	public check_has_no_zero_mass = (): null | boolean => {
 		if (this.UR_order === 0) {
-			console.warn("No Dirac Deltas found.");
 			return null;
 		}
 
@@ -1134,16 +1364,23 @@ class DistributionalValue {
 		}
 
 		if (this.UR_order === 0) {
-			console.warn("No Dirac Deltas found.");
 			return;
 		}
 
 		this._dirac_deltas = this._dirac_deltas.filter(dd => dd.mass > 0);
 		this._has_no_zero_mass = true;
 
-		/* Dropping deltas can change every cached verdict, the slot tail included. */
+		/*
+		 * Dropping Dirac deltas can change the cached verdicts, so they are
+		 * recomputed, where signaloid-data-toolkit keeps them. A sorted value
+		 * stays sorted, though, so that verdict stands: resetting it would make
+		 * the next `sort()` re-append the zero-mass slots just dropped, growing
+		 * `UR_order` and the export back, as signaloid-data-toolkit does not.
+		 */
 		this._is_finite = null;
-		this._is_sorted = null;
+		if (this._is_sorted !== true) {
+			this._is_sorted = null;
+		}
 		this._is_cured = null;
 		this._is_full_valid_TTR = null;
 	}
@@ -1173,12 +1410,11 @@ class DistributionalValue {
 	 */
 	public check_is_finite = (): null | boolean => {
 		if (this.UR_order === 0) {
-			console.warn("No Dirac Deltas found.");
 			return null;
 		}
 
 		for (const dd of this.dirac_deltas) {
-			if (!dd.isFinite()) {
+			if (!dd.isFinite) {
 				return false;
 			}
 		}
@@ -1213,7 +1449,6 @@ class DistributionalValue {
 	 */
 	public check_is_sorted = (): null | boolean => {
 		if (this.UR_order === 0) {
-			console.warn("No Dirac Deltas found.");
 			return null;
 		}
 
@@ -1230,7 +1465,7 @@ class DistributionalValue {
 		const finite_length: number = has_cured_tail ? length - 3 : length;
 
 		for (let i = 0; i < finite_length; i++) {
-			if (!deltas[i].isFinite()) {
+			if (!deltas[i].isFinite) {
 				return false;
 			}
 
@@ -1258,7 +1493,7 @@ class DistributionalValue {
 		let pos_inf_mass: number = 0;
 		const finite_dirac_deltas: Array<DiracDelta> = [];
 		for (const dd of this.dirac_deltas) {
-			if (dd.isFinite()) {
+			if (dd.isFinite) {
 				finite_dirac_deltas.push(dd);
 			} else if (isNaN(dd.position)) {
 				nan_mass += dd.mass;
@@ -1313,7 +1548,14 @@ class DistributionalValue {
 			return null;
 		}
 
-		return this.UR_order == new Set(this.positions).size;
+		/*
+		 * Python's `set()` over the positions keeps every NaN as a distinct
+		 * entry, since NaN != NaN, where a JavaScript `Set` collapses them.
+		 */
+		const positions: Array<number> = this.positions;
+		const non_nan_positions: Array<number> = positions.filter(position => !Number.isNaN(position));
+
+		return non_nan_positions.length === new Set(non_nan_positions).size;
 	}
 
 	/**
@@ -1344,7 +1586,9 @@ class DistributionalValue {
 	): void {
 		this.sort();
 
-		if (this.finite_dirac_deltas.length <= 1) {
+		/* Read once: the getter filters the whole list on every access. */
+		const finite_dirac_deltas: Array<DiracDelta> = this.finite_dirac_deltas;
+		if (finite_dirac_deltas.length <= 1) {
 			this._is_cured = true;
 			return;
 		}
@@ -1360,15 +1604,20 @@ class DistributionalValue {
 			/*
 			 * Last three positions are for non-finite values
 			 */
-			for (const dd of this.finite_dirac_deltas) {
+			for (const dd of finite_dirac_deltas) {
 				finite_mass += dd.mass;
 				finite_mean += dd.position * dd.mass;
 			}
 			finite_mean /= finite_mass;
-			const mean_threshold: number = finite_mean * relative_mean_threshold;
+			/*
+			 * The threshold is a distance, so it uses the size of the mean. A
+			 * negative mean would otherwise give a negative threshold, and
+			 * coincident Dirac deltas would never be combined.
+			 */
+			const mean_threshold: number = Math.abs(finite_mean) * relative_mean_threshold;
 
 			const range_threshold: number = (
-				(this.finite_dirac_deltas[this.finite_dirac_deltas.length - 1].position - this.dirac_deltas[0].position)
+				(finite_dirac_deltas[finite_dirac_deltas.length - 1].position - this.dirac_deltas[0].position)
 				* relative_range_threshold
 			);
 
@@ -1377,7 +1626,8 @@ class DistributionalValue {
 
 		const dirac_deltas = [this.dirac_deltas[0]];
 		let index = 0;
-		for (const dd of this.finite_dirac_deltas.slice(1)) {
+		for (let i = 1; i < finite_dirac_deltas.length; i++) {
+			const dd: DiracDelta = finite_dirac_deltas[i];
 			if (dirac_deltas[index].similar(dd, threshold)) {
 				dirac_deltas[index] = dirac_deltas[index].add(dd);
 				continue;
@@ -1435,9 +1685,22 @@ class DistributionalValue {
 		this.drop_zero_mass_positions();
 		this.cure();
 
+		/*
+		 * Before the finiteness check, because `is_finite` is `null` for an
+		 * empty value.
+		 */
 		if (this.UR_order === 0) {
-			console.warn("No Dirac Deltas found.");
 			return null;
+		}
+
+		/*
+		 * A non-finite Dirac delta cannot be part of a TTR, so a value carrying
+		 * one is never a full valid TTR, as in signaloid-data-toolkit. Athens
+		 * and Rome values still take the TTR route when plotted, via
+		 * `TTR_NATIVE_UR_TYPES`.
+		 */
+		if (!this.is_finite) {
+			return false;
 		}
 
 		if (this.UR_order === 1) {
@@ -1445,26 +1708,20 @@ class DistributionalValue {
 		}
 
 		/*
-		 * Check UR_order is power of 2, only on the finite part
+		 * Check UR_order is power of 2
 		 */
-		let finite_dirac_deltas = this.finite_dirac_deltas;
-		let finite_dirac_deltas_length = finite_dirac_deltas.length;
-		if ((finite_dirac_deltas_length & (finite_dirac_deltas_length - 1)) !== 0) {
+		if ((this.UR_order & (this.UR_order - 1)) !== 0) {
 			return false;
 		}
 
-		const ttr_order: number = Math.log2(finite_dirac_deltas_length)
-		if (ttr_order % 1 !== 0) {
-			return false;
-		}
-
-		const number_of_boundaries: number = 2 * finite_dirac_deltas_length - 1
-		const boundary_positions = Array(number_of_boundaries).fill(NaN);
-		const boundary_probabilities = Array(number_of_boundaries).fill(NaN);
+		const ttr_order: number = Math.log2(this.UR_order);
+		const number_of_boundaries: number = 2 * this.UR_order - 1;
+		const boundary_positions: Array<number> = Array(number_of_boundaries).fill(NaN);
+		const boundary_probabilities: Array<number> = Array(number_of_boundaries).fill(NaN);
 
 		for (let i = 0, j = 0; i < number_of_boundaries; i += 2, j++) {
-			boundary_positions[i] = finite_dirac_deltas[j].position;
-			boundary_probabilities[i] = finite_dirac_deltas[j].mass;
+			boundary_positions[i] = this.dirac_deltas[j].position;
+			boundary_probabilities[i] = this.dirac_deltas[j].mass;
 		}
 
 		for (let n = 0; n < ttr_order; n++) {
@@ -1575,4 +1832,9 @@ export {
 	bytes_tohex,
 	bytes_fromhex,
 	DistributionalValue,
+	TTR_NATIVE_UR_TYPES,
+	UR_TYPE_ATHENS,
+	UR_TYPE_JUPITER,
+	UR_TYPE_ROME,
+	UR_TYPE_UNSPECIFIED,
 };

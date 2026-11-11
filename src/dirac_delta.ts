@@ -1,23 +1,23 @@
 /*
- *   Copyright(c) 2025, Signaloid.
+ *	Copyright (c) 2025, Signaloid.
  *
- *   Permission is hereby granted, free of charge, to any person obtaining a copy
- *   of this software and associated documentation files (the "Software"), to
- *   deal in the Software without restriction, including without limitation the
- *   rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- *   sell copies of the Software, and to permit persons to whom the Software is
- *   furnished to do so, subject to the following conditions:
+ *	Permission is hereby granted, free of charge, to any person obtaining a copy
+ *	of this software and associated documentation files (the "Software"), to deal
+ *	in the Software without restriction, including without limitation the rights
+ *	to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ *	copies of the Software, and to permit persons to whom the Software is
+ *	furnished to do so, subject to the following conditions:
  *
- *   The above copyright notice and this permission notice shall be included in
- *   all copies or substantial portions of the Software.
+ *	The above copyright notice and this permission notice shall be included in all
+ *	copies or substantial portions of the Software.
  *
- *   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- *   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- *   DEALINGS IN THE SOFTWARE.
+ *	THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ *	IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ *	FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *	AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ *	LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ *	OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ *	SOFTWARE.
  */
 
 
@@ -41,8 +41,8 @@ function float_to_fixed_point(value: number): bigint {
 
 class DiracDelta {
 	position: number = 0;
-	_raw_mass: bigint = 0n;
-	_mass: number = 0;
+	private _raw_mass: bigint = 0n;
+	private _mass: number = 0;
 
 	/**
 	 * Initializes the Dirac Delta, given a position, and a mass in either
@@ -55,6 +55,8 @@ class DiracDelta {
 	 * defaults to null.
 	 * @param mass The Dirac Delta mass in floating-point representation,
 	 * defaults to null.
+	 *
+	 * @throws EvalError: When the given mass is negative.
 	 */
 	constructor(options: {
 		position: number,
@@ -83,8 +85,14 @@ class DiracDelta {
 	 * Sets the Dirac Delta mass given a 64bit fixed-point mass.
 	 *
 	 * @param value The 64bit fixed-point mass to use.
+	 *
+	 * @throws EvalError: When the given mass is negative.
 	 */
 	set raw_mass(value: bigint) {
+		if (value < 0n) {
+			throw EvalError(`raw_mass must be non-negative; got ${value}.`);
+		}
+
 		this._raw_mass = value;
 		this._mass = fixed_point_to_float(value);
 	}
@@ -125,9 +133,16 @@ class DiracDelta {
 	 *
 	 * @param other The second Dirac Delta to use for adding.
 	 * @returns A new Dirac Delta, with combined position, and mass.
+	 *
+	 * @throws RangeError: When the combined mass is zero, so that the combined
+	 * position is undefined, as Python's float division by zero raises.
 	 */
 	public add(other: DiracDelta): DiracDelta {
 		const combined_mass: number = this.mass + other.mass;
+		if (combined_mass === 0) {
+			throw RangeError("float division by zero");
+		}
+
 		const combined_position: number = (
 			this.position * this.mass
 			+ other.position * other.mass
@@ -181,22 +196,22 @@ class DiracDelta {
 	}
 
 	/**
-	 * Checks if this Dirac Delta is greater than the given Dirac Delta.
+	 * Checks if this Dirac Delta is greater than or equal to the given Dirac Delta.
 	 *
 	 * @param other The second Dirac Delta to use for the comparison.
-	 * @returns `True` if this Dirac Delta is greater than the given Dirac Delta,
-	 * `False` otherwise.
+	 * @returns `True` if this Dirac Delta is greater than or equal to the given
+	 * Dirac Delta, `False` otherwise.
 	 */
 	public ge(other: DiracDelta): boolean {
 		return this.position >= other.position;
 	}
 
 	/**
-	 * Checks if this Dirac Delta is greater than or equal to the given Dirac Delta.
+	 * Checks if this Dirac Delta is greater than the given Dirac Delta.
 	 *
 	 * @param other The second Dirac Delta to use for the comparison.
-	 * @returns `True` if this Dirac Delta is greater than or equal to the given
-	 * Dirac Delta, `False` otherwise.
+	 * @returns `True` if this Dirac Delta is greater than the given Dirac Delta,
+	 * `False` otherwise.
 	 */
 	public gt(other: DiracDelta): boolean {
 		return this.position > other.position;
@@ -236,12 +251,12 @@ class DiracDelta {
 	}
 
 	/**
-	 * Checks if the Dirac Delta is has a finite position.
+	 * Whether the Dirac Delta has a finite position. A property, as in Python.
 	 *
-	 * @returns `True` is the Dirac Delta position is finite, `False` otherwise.
+	 * @returns `True` if the Dirac Delta position is finite, `False` otherwise.
 	 */
-	public isFinite(): boolean {
-		return Number.isFinite(this.position)
+	get isFinite(): boolean {
+		return Number.isFinite(this.position);
 	}
 }
 
